@@ -1,61 +1,156 @@
-<section id="job-status" class="space-y-4 rounded-3xl border border-white/10 bg-white/5 p-4 shadow-2xl shadow-black/20 backdrop-blur">
-  <div class="flex items-start justify-between gap-4">
+<section
+  id="job-status"
+  class="panel stack"
+  hx-get="/partials/jobs/{{ job.id }}"
+  hx-trigger="load{% if job.status not in ['completed', 'failed'] %}, every 3s{% endif %}"
+  hx-swap="outerHTML"
+>
+  <div class="row-between">
     <div>
-      <p class="text-xs uppercase tracking-[0.18em] text-stone-400">Stato import</p>
-      <h1 class="mt-2 text-2xl font-semibold text-white">{{ job.recipe_data.title if job.recipe_data else "Importazione ricetta" }}</h1>
-      <p class="mt-2 text-sm leading-6 text-stone-300">{{ job.message }}</p>
+      <p class="section-title">Stato import</p>
+      <h1 class="title" style="font-size: 1.8rem; margin-top: 10px;">
+        {{ job.recipe_data.title if job.recipe_data else "Importazione ricetta" }}
+      </h1>
+      <p class="subtitle" style="margin-top: 10px;">{{ job.message }}</p>
     </div>
-    <div class="rounded-full px-3 py-1 text-xs font-semibold
-      {% if job.status == 'completed' %}bg-emerald-400/15 text-emerald-300
-      {% elif job.status == 'failed' %}bg-rose-400/15 text-rose-300
-      {% else %}bg-amber-300/15 text-amber-200{% endif %}">
+    <div class="status-pill status-{{ job.status }}">
       {{ job.status }}
     </div>
   </div>
 
-  <div class="grid gap-3 rounded-2xl bg-stone-900/60 p-4 text-sm text-stone-200">
+  <div class="info-box">
     <div>
-      <span class="text-stone-400">Fonte</span>
-      <div class="mt-1 break-all">{{ job.recipe_url }}</div>
+      <span class="info-label">Fonte</span>
+      <div class="info-value">{{ job.recipe_url }}</div>
     </div>
-    <div class="grid grid-cols-2 gap-3">
+    <div class="info-grid">
       <div>
-        <span class="text-stone-400">Creato</span>
-        <div class="mt-1">{{ job.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</div>
+        <span class="info-label">Creato</span>
+        <div class="info-value">{{ job.created_at.strftime('%d/%m/%Y %H:%M UTC') }}</div>
       </div>
       <div>
-        <span class="text-stone-400">Aggiornato</span>
-        <div class="mt-1">{{ job.updated_at.strftime('%d/%m/%Y %H:%M UTC') }}</div>
+        <span class="info-label">Aggiornato</span>
+        <div class="info-value">{{ job.updated_at.strftime('%d/%m/%Y %H:%M UTC') }}</div>
       </div>
     </div>
   </div>
 
   {% if job.recipe_data %}
-    <div class="rounded-2xl bg-stone-900/60 p-4">
-      <h2 class="text-sm font-semibold text-white">Anteprima ricetta</h2>
-      <div class="mt-3 grid gap-3 text-sm text-stone-300">
-        <div class="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
-          <div class="text-xs uppercase tracking-[0.18em] text-stone-500">Ingredienti</div>
-          <div class="mt-2">{{ job.recipe_data.ingredients|length }}</div>
+    <div class="info-box">
+      <h2 class="label">Anteprima ricetta</h2>
+      <div class="preview-grid">
+        <div class="stat-card">
+          <div class="stat-label">Ingredienti</div>
+          <div class="stat-value">{{ job.recipe_data.ingredients|length }}</div>
         </div>
-        <div class="rounded-2xl border border-white/5 bg-white/[0.03] p-3">
-          <div class="text-xs uppercase tracking-[0.18em] text-stone-500">Step</div>
-          <div class="mt-2">{{ job.recipe_data.steps|length }}</div>
+        <div class="stat-card">
+          <div class="stat-label">Step</div>
+          <div class="stat-value">{{ job.recipe_data.steps|length }}</div>
         </div>
+      </div>
+    </div>
+
+    <div class="info-box">
+      <div class="row-between">
+        <h2 class="label">Titolo</h2>
+        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-title')">Copia</button>
+      </div>
+      <div id="recipe-title" class="info-value">{{ job.recipe_data.title }}</div>
+    </div>
+
+    <div class="info-box">
+      <div class="row-between">
+        <h2 class="label">Ingredienti</h2>
+        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-ingredients')">Copia ingredienti</button>
+      </div>
+      <textarea id="recipe-ingredients" class="input" rows="10">{{ job.ingredients_text }}</textarea>
+    </div>
+
+    <div class="info-box">
+      <div class="row-between">
+        <h2 class="label">Step con parametri</h2>
+        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-steps')">Copia step</button>
+      </div>
+      <textarea id="recipe-steps" class="input" rows="18">{{ job.steps_text }}</textarea>
+    </div>
+
+    <div class="info-box">
+      <div class="row-between">
+        <h2 class="label">Formato pronto per Monsieur Cuisine</h2>
+        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-mc-steps')">Copia formato MC</button>
+      </div>
+      <textarea id="recipe-mc-steps" class="input" rows="18">{{ job.mc_steps_text }}</textarea>
+    </div>
+
+    <div class="info-box">
+      <h2 class="label">Step separati</h2>
+      <div class="stack" style="gap: 14px;">
+        {% for step in job.recipe_data.steps %}
+          <div class="stat-card">
+            <div class="row-between" style="align-items: center;">
+              <div class="label">Step {{ loop.index }}</div>
+              <button type="button" class="button button-secondary" onclick="copyFromTarget('step-card-{{ loop.index }}')">Copia step</button>
+            </div>
+
+            <textarea id="step-card-{{ loop.index }}" class="input" rows="8" style="margin-top: 12px;">Descrizione: {{ step.description }}
+Tempo (min): {{ (step.duration_seconds // 60) if step.duration_seconds is not none else '-' }}
+Temperatura (C): {{ step.temperature_c if step.temperature_c is not none else '-' }}
+Velocita: {{ step.speed if step.speed else '-' }}
+Reverse: {{ 'Si' if step.reverse else 'No' }}</textarea>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if job.recipe_json %}
+      <div class="info-box">
+        <div class="row-between">
+          <h2 class="label">JSON pronto</h2>
+          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-json')">Copia tutto</button>
+        </div>
+        <textarea id="recipe-json" class="input" rows="18">{{ job.recipe_json }}</textarea>
+      </div>
+    {% endif %}
+
+    <div class="info-box">
+      <div class="row-between">
+        <h2 class="label">Portale Monsieur Cuisine</h2>
+        <a class="button button-secondary" href="https://www.monsieur-cuisine.com/it/ricette-create" target="_blank" rel="noreferrer">Apri Monsieur Cuisine</a>
+      </div>
+      <div class="job-text" style="margin-top: 0;">
+        Apri il portale nel tuo browser normale, fai login se necessario e incolla i dati copiati da questa pagina.
       </div>
     </div>
   {% endif %}
 
   {% if job.error %}
-    <div class="rounded-2xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm leading-6 text-rose-100">
+    <div class="alert alert-danger">
       {{ job.error }}
     </div>
   {% endif %}
 
+  {% if job.debug_files %}
+    <div class="info-box">
+      <h2 class="label">Debug locale</h2>
+      <div class="stack" style="gap: 10px;">
+        {% for file in job.debug_files %}
+          <div class="job-text" style="margin-top: 0;">{{ file }}</div>
+        {% endfor %}
+      </div>
+    </div>
+  {% endif %}
+
+  {% if job.debug_traceback %}
+    <div class="info-box">
+      <h2 class="label">Traceback</h2>
+      <pre class="job-text" style="margin-top: 0; white-space: pre-wrap; word-break: break-word;">{{ job.debug_traceback }}</pre>
+    </div>
+  {% endif %}
+
   {% if job.status in ["completed", "failed"] %}
-    <a href="/" class="block w-full rounded-2xl bg-white px-4 py-3 text-center text-sm font-semibold text-stone-900">Nuovo import</a>
+    <a href="/" class="button" style="background: #ffffff;">Nuovo import</a>
   {% else %}
-    <div class="rounded-2xl border border-amber-300/20 bg-amber-300/10 p-4 text-sm text-amber-100">
+    <div class="alert alert-warning">
       La pagina si aggiorna automaticamente ogni 3 secondi.
     </div>
   {% endif %}

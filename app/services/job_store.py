@@ -12,11 +12,17 @@ class ImportJob:
     id: str
     recipe_url: str
     status: str = "queued"
-    message: str = "In coda"
+    message: str = "In coda per l'estrazione"
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     recipe_data: Optional[RecipeData] = None
     error: Optional[str] = None
+    debug_files: list[str] = field(default_factory=list)
+    debug_traceback: Optional[str] = None
+    recipe_json: Optional[str] = None
+    ingredients_text: Optional[str] = None
+    steps_text: Optional[str] = None
+    mc_steps_text: Optional[str] = None
 
 
 class InMemoryJobStore:
@@ -47,6 +53,12 @@ class InMemoryJobStore:
         message: Optional[str] = None,
         recipe_data: Optional[RecipeData] = None,
         error: Optional[str] = None,
+        debug_files: Optional[list[str]] = None,
+        debug_traceback: Optional[str] = None,
+        recipe_json: Optional[str] = None,
+        ingredients_text: Optional[str] = None,
+        steps_text: Optional[str] = None,
+        mc_steps_text: Optional[str] = None,
     ) -> Optional[ImportJob]:
         async with self._lock:
             job = self._jobs.get(job_id)
@@ -60,5 +72,17 @@ class InMemoryJobStore:
                 job.recipe_data = recipe_data
             if error is not None:
                 job.error = error
+            if debug_files is not None:
+                job.debug_files = debug_files
+            if debug_traceback is not None:
+                job.debug_traceback = debug_traceback
+            if recipe_json is not None:
+                job.recipe_json = recipe_json
+            if ingredients_text is not None:
+                job.ingredients_text = ingredients_text
+            if steps_text is not None:
+                job.steps_text = steps_text
+            if mc_steps_text is not None:
+                job.mc_steps_text = mc_steps_text
             job.updated_at = datetime.now(timezone.utc)
             return job

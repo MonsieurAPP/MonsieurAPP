@@ -1,17 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Stato import{% endblock %}
 {% block content %}
-<div class="mb-5 flex items-center justify-between">
-  <a href="/" class="rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs font-medium text-stone-200">Torna alla home</a>
-  <div class="text-xs text-stone-400">Job {{ job.id[:8] }}</div>
+<div class="topbar">
+  <a href="/" class="button button-secondary">Torna alla home</a>
+  <div class="muted-small">Job {{ job.id[:8] }}</div>
 </div>
 
-<div
-  id="job-status"
-  hx-get="/partials/jobs/{{ job.id }}"
-  hx-trigger="load{% if job.status not in ['completed', 'failed'] %}, every 3s{% endif %}"
-  hx-swap="outerHTML"
->
-  {% include "partials/job_status.html" %}
-</div>
+{% include "partials/job_status.html" %}
+<script>
+  function copyFromTarget(targetId) {
+    const node = document.getElementById(targetId);
+    if (!node) return;
+    const text = node.value !== undefined ? node.value : node.innerText;
+    navigator.clipboard.writeText(text);
+  }
+</script>
 {% endblock %}

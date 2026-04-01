@@ -6,6 +6,7 @@ cd /d "%~dp0"
 set "HOST=127.0.0.1"
 set "PORT=8000"
 set "APP_URL=http://%HOST%:%PORT%/"
+set "HEADLESS=0"
 
 echo.
 echo === MonsieurAPP local launcher ===
@@ -52,7 +53,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"')
 
 set "RELOAD=1"
 set "PORT=%PORT%"
-set "HEADLESS=1"
+set "HEADLESS=%HEADLESS%"
 
 echo Avvio applicazione...
 start "MonsieurAPP" cmd /k "cd /d ""%CD%"" && python main.py"

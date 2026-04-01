@@ -1,74 +1,57 @@
 {% extends "base.html" %}
 {% block title %}Importa ricetta{% endblock %}
 {% block content %}
-<section class="mb-6">
-  <div class="inline-flex rounded-full border border-amber-400/30 bg-amber-300/10 px-3 py-1 text-xs font-medium text-amber-200">
-    Mobile-first importer
+<section class="hero">
+  <div class="badge">
+    Recipe extractor
   </div>
-  <h1 class="mt-4 text-3xl font-semibold tracking-tight text-white">Trasferisci ricette su Monsieur Cuisine</h1>
-  <p class="mt-3 text-sm leading-6 text-stone-300">
-    Incolla un URL GialloZafferano o Cookidoo, avvia l'import e monitora lo stato direttamente dallo smartphone.
+  <h1 class="title">Estrai ricette e preparale per Monsieur Cuisine</h1>
+  <p class="subtitle">
+    Incolla un URL GialloZafferano o Cookidoo, ottieni ingredienti, step e JSON pronti da copiare nel portale Monsieur Cuisine dal tuo browser normale.
   </p>
 </section>
 
-<section class="rounded-3xl border border-white/10 bg-white/5 p-4 shadow-2xl shadow-black/20 backdrop-blur">
-  <form action="/imports" method="post" class="space-y-4">
-    <div>
-      <label for="recipe_url" class="mb-2 block text-sm font-medium text-stone-200">URL ricetta</label>
-      <input id="recipe_url" name="recipe_url" type="url" required placeholder="https://www.giallozafferano.it/..."
-        class="w-full rounded-2xl border border-white/10 bg-stone-900/80 px-4 py-3 text-sm text-white outline-none placeholder:text-stone-500 focus:border-amber-300/60" />
+<section class="panel">
+  <div class="job-text" style="margin-bottom: 18px;">
+    Supporta GialloZafferano e Cookidoo. L'app non prova piu' a fare login: prepara soltanto i dati da copiare.
+  </div>
+
+  <form action="/imports" method="post" class="stack">
+    <div class="field">
+      <label for="recipe_url" class="label">URL ricetta</label>
+      <input id="recipe_url" name="recipe_url" type="url" required placeholder="https://www.giallozafferano.it/..." class="input" />
     </div>
 
-    <div>
-      <div class="mb-2 flex items-center justify-between">
-        <label for="username" class="block text-sm font-medium text-stone-200">Email Lidl</label>
-        {% if default_username %}
-          <span class="text-xs text-emerald-300">Env attiva: {{ masked_username }}</span>
-        {% endif %}
-      </div>
-      <input id="username" name="username" type="email" value="{{ default_username }}" placeholder="Lascia vuoto per usare le env"
-        class="w-full rounded-2xl border border-white/10 bg-stone-900/80 px-4 py-3 text-sm text-white outline-none placeholder:text-stone-500 focus:border-amber-300/60" />
-    </div>
-
-    <div>
-      <label for="password" class="mb-2 block text-sm font-medium text-stone-200">Password Lidl</label>
-      <input id="password" name="password" type="password" placeholder="Lascia vuoto per usare le env"
-        class="w-full rounded-2xl border border-white/10 bg-stone-900/80 px-4 py-3 text-sm text-white outline-none placeholder:text-stone-500 focus:border-amber-300/60" />
-    </div>
-
-    <button type="submit" class="w-full rounded-2xl bg-amber-300 px-4 py-3 text-sm font-semibold text-stone-900 transition hover:bg-amber-200">
-      Avvia import
+    <button type="submit" class="button">
+      Estrai ricetta
     </button>
   </form>
 </section>
 
-<section class="mt-6 grid gap-3">
-  <div class="flex items-center justify-between">
-    <h2 class="text-sm font-semibold uppercase tracking-[0.18em] text-stone-400">Import recenti</h2>
+<section class="list">
+  <div class="section-header">
+    <h2 class="section-title">Import recenti</h2>
     {% if render_environment %}
-      <span class="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 text-[11px] font-medium text-emerald-300">Render</span>
+      <span class="tag">Render</span>
     {% endif %}
   </div>
 
   {% if jobs %}
     {% for job in jobs %}
-      <a href="/imports/{{ job.id }}" class="rounded-2xl border border-white/10 bg-white/5 p-4 transition hover:border-amber-300/40">
-        <div class="flex items-start justify-between gap-3">
+      <a href="/imports/{{ job.id }}" class="card-link">
+        <div class="row-between">
           <div>
-            <div class="text-sm font-medium text-white">{{ job.recipe_data.title if job.recipe_data else job.recipe_url }}</div>
-            <div class="mt-1 text-xs text-stone-400">{{ job.message }}</div>
+            <div class="job-title">{{ job.recipe_data.title if job.recipe_data else job.recipe_url }}</div>
+            <div class="job-text">{{ job.message }}</div>
           </div>
-          <div class="rounded-full px-2 py-1 text-[11px] font-semibold
-            {% if job.status == 'completed' %}bg-emerald-400/15 text-emerald-300
-            {% elif job.status == 'failed' %}bg-rose-400/15 text-rose-300
-            {% else %}bg-amber-300/15 text-amber-200{% endif %}">
+          <div class="status-pill status-{{ job.status }}">
             {{ job.status }}
           </div>
         </div>
       </a>
     {% endfor %}
   {% else %}
-    <div class="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] p-4 text-sm text-stone-400">
+    <div class="panel-soft">
       Nessun import ancora avviato.
     </div>
   {% endif %}

@@ -1,6 +1,5 @@
-import asyncio
 import logging
-import os
+import traceback
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -9,7 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.services.job_store import InMemoryJobStore
-from app.services.monsieur_cuisine import LoginError, MonsieurCuisineUploader, UploadError
 from app.services.recipe_service import RecipeExtractionError, extract_recipe
 
 
@@ -29,37 +27,83 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 job_store = InMemoryJobStore()
 
 
-def masked_username(username: str) -> str:
-    if not username or "@" not in username:
-        return "Account configurato"
-    name, domain = username.split("@", 1)
-    visible = name[:2] if len(name) > 2 else name[:1]
-    return f"{visible}***@{domain}"
+def format_step_minutes(duration_seconds: int | None) -> str:
+    if duration_seconds is None:
+        return "-"
+    return str(max(1, round(duration_seconds / 60)))
 
 
-async def run_import_job(job_id: str, recipe_url: str, username: str, password: str) -> None:
+def build_ingredients_text(recipe) -> str:
+    return "\n".join(recipe.ingredients)
+
+
+def build_steps_text(recipe) -> str:
+    blocks = []
+    for index, step in enumerate(recipe.steps, start=1):
+        blocks.append(
+            "\n".join(
+                [
+                    f"Step {index}",
+                    f"Descrizione: {step.description}",
+                    f"Tempo: {format_step_minutes(step.duration_seconds)} min",
+                    f"Temperatura: {step.temperature_c if step.temperature_c is not None else '-'} C",
+                    f"Velocita: {step.speed if step.speed else '-'}",
+                    f"Reverse: {'Si' if step.reverse else 'No'}",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def build_mc_steps_text(recipe) -> str:
+    lines = []
+    for index, step in enumerate(recipe.steps, start=1):
+        lines.extend(
+            [
+                f"STEP {index}",
+                f"Titolo/Descrizione: {step.description}",
+                f"Tempo (min): {format_step_minutes(step.duration_seconds)}",
+                f"Temperatura (C): {step.temperature_c if step.temperature_c is not None else '-'}",
+                f"Velocita: {step.speed if step.speed else '-'}",
+                f"Reverse: {'Si' if step.reverse else 'No'}",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+async def run_extract_job(job_id: str, recipe_url: str) -> None:
     await job_store.update(job_id, status="extracting", message="Estrazione ricetta in corso")
     try:
         recipe = await extract_recipe(recipe_url)
         await job_store.update(
             job_id,
-            status="uploading",
-            message=f"Ricetta estratta: {recipe.title}. Upload su Monsieur Cuisine in corso",
+            status="completed",
+            message="Ricetta estratta e pronta da copiare su Monsieur Cuisine",
             recipe_data=recipe,
+            recipe_json=recipe.to_json(),
+            ingredients_text=build_ingredients_text(recipe),
+            steps_text=build_steps_text(recipe),
+            mc_steps_text=build_mc_steps_text(recipe),
         )
-
-        async with MonsieurCuisineUploader(headless=os.getenv("HEADLESS", "1") == "1") as uploader:
-            await uploader.login_lidl(username=username, password=password)
-            await job_store.update(job_id, status="uploading", message="Login completato, compilazione form in corso")
-            await uploader.upload_to_mc(recipe)
-
-        await job_store.update(job_id, status="completed", message="Import completato con successo")
-    except (RecipeExtractionError, LoginError, UploadError) as exc:
+    except RecipeExtractionError as exc:
         LOGGER.exception("Errore di dominio nel job %s", job_id)
-        await job_store.update(job_id, status="failed", message="Import fallito", error=str(exc))
+        await job_store.update(
+            job_id,
+            status="failed",
+            message="Estrazione fallita",
+            error=str(exc) or repr(exc),
+            debug_traceback=traceback.format_exc(),
+        )
     except Exception as exc:  # pragma: no cover
         LOGGER.exception("Errore inatteso nel job %s", job_id)
-        await job_store.update(job_id, status="failed", message="Errore inatteso", error=str(exc))
+        await job_store.update(
+            job_id,
+            status="failed",
+            message="Errore inatteso",
+            error=str(exc) or repr(exc),
+            debug_traceback=traceback.format_exc(),
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -70,9 +114,6 @@ async def home(request: Request) -> HTMLResponse:
         "index.html",
         {
             "jobs": jobs,
-            "default_username": os.getenv("LIDL_USERNAME", ""),
-            "render_environment": os.getenv("RENDER", ""),
-            "masked_username": masked_username(os.getenv("LIDL_USERNAME", "")),
         },
     )
 
@@ -80,20 +121,10 @@ async def home(request: Request) -> HTMLResponse:
 @app.post("/imports", response_class=HTMLResponse)
 async def create_import(
     recipe_url: str = Form(...),
-    username: str = Form(""),
-    password: str = Form(""),
 ) -> HTMLResponse:
-    effective_username = username or os.getenv("LIDL_USERNAME", "")
-    effective_password = password or os.getenv("LIDL_PASSWORD", "")
-
-    if not effective_username or not effective_password:
-        raise HTTPException(
-            status_code=400,
-            detail="Credenziali mancanti. Inseriscile nel form o configura LIDL_USERNAME e LIDL_PASSWORD.",
-        )
-
     job = await job_store.create(recipe_url)
-    asyncio.create_task(run_import_job(job.id, recipe_url, effective_username, effective_password))
+    import asyncio
+    asyncio.create_task(run_extract_job(job.id, recipe_url))
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
 
 
