@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}MonsieurAPP{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  </head>
+  <body class="min-h-screen bg-stone-950 text-stone-50">
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(251,191,36,0.18),_transparent_28%),radial-gradient(circle_at_bottom,_rgba(16,185,129,0.14),_transparent_34%)]"></div>
+    <main class="relative mx-auto flex min-h-screen w-full max-w-md flex-col px-4 py-6 sm:px-6">
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>
