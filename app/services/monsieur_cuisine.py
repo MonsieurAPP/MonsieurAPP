@@ -1,13 +1,9 @@
 import logging
-import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from playwright.sync_api import (
-    Browser,
     BrowserContext,
     Error as PlaywrightError,
     Locator,
@@ -43,31 +39,33 @@ class AutomationDebugError(Exception):
 class MonsieurCuisineUploader:
     BASE_URL = "https://www.monsieur-cuisine.com"
     LOGIN_URL = "https://www.monsieur-cuisine.com/it/accesso-richiesto"
-    CREATED_RECIPES_URL = "https://www.monsieur-cuisine.com/it/ricette-create"
+    CREATED_RECIPES_URL = "https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart"
     USER_DATA_DIR = STATE_BASE_DIR / "monsieur_cuisine_browser_profile"
-    CDP_PORT = 9222
-    CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
     SESSION_MARKER = STATE_BASE_DIR / "session_verified.ok"
 
-    def __init__(self) -> None:
+    def __init__(self, headless: bool = True) -> None:
+        self.headless = headless
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self._playwright: Optional[Playwright] = None
-        self._browser: Optional[Browser] = None
         self._owned_page: Optional[Page] = None
 
     def __enter__(self) -> "MonsieurCuisineUploader":
-        if not self.is_browser_available():
-            raise LoginError("Browser account non disponibile. Usa prima 'Collega account' e lascia la finestra aperta.")
-
         self._playwright = sync_playwright().start()
-        self._browser = self._playwright.chromium.connect_over_cdp(self.CDP_URL)
-        if not self._browser.contexts:
-            raise LoginError("Impossibile agganciarsi al browser collegato.")
+        self.USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        launch_options = {
+            "user_data_dir": str(self.USER_DATA_DIR),
+            "headless": self.headless,
+            "args": ["--no-first-run", "--no-default-browser-check"],
+        }
+        browser_channel = self.find_browser_channel()
+        if browser_channel:
+            launch_options["channel"] = browser_channel
 
-        self.context = self._browser.contexts[0]
-        self.page = self.context.new_page()
-        self._owned_page = self.page
+        self.context = self._playwright.chromium.launch_persistent_context(**launch_options)
+        existing_pages = list(self.context.pages)
+        self.page = existing_pages[0] if existing_pages else self.context.new_page()
+        self._owned_page = None if existing_pages else self.page
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -76,11 +74,11 @@ class MonsieurCuisineUploader:
                 self._owned_page.close()
             except Exception:
                 LOGGER.exception("Impossibile chiudere la pagina Playwright")
-        if self._browser:
+        if self.context:
             try:
-                self._browser.close()
+                self.context.close()
             except Exception:
-                LOGGER.exception("Impossibile chiudere la connessione CDP")
+                LOGGER.exception("Impossibile chiudere il contesto Playwright persistente")
         if self._playwright:
             self._playwright.stop()
 
@@ -101,12 +99,17 @@ class MonsieurCuisineUploader:
         return None
 
     @classmethod
-    def is_browser_available(cls) -> bool:
-        try:
-            response = httpx.get(f"{cls.CDP_URL}/json/version", timeout=1.5)
-            return response.status_code == 200
-        except Exception:
-            return False
+    def find_browser_channel(cls) -> Optional[str]:
+        browser_path = cls.find_browser_executable()
+        if not browser_path:
+            return None
+
+        browser_name = browser_path.name.lower()
+        if browser_name == "chrome.exe":
+            return "chrome"
+        if browser_name == "msedge.exe":
+            return "msedge"
+        return None
 
     @classmethod
     def has_saved_session(cls) -> bool:
@@ -114,37 +117,12 @@ class MonsieurCuisineUploader:
 
     @classmethod
     def launch_system_login_browser(cls) -> str:
-        browser_path = cls.find_browser_executable()
-        if not browser_path:
-            raise LoginError("Chrome o Edge non trovati sul sistema.")
-
         cls.USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
         cls.SESSION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         if cls.SESSION_MARKER.exists():
             cls.SESSION_MARKER.unlink()
-        command = [
-            str(browser_path),
-            f"--remote-debugging-port={cls.CDP_PORT}",
-            f"--user-data-dir={cls.USER_DATA_DIR}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--new-window",
-            cls.LOGIN_URL,
-        ]
-
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-
-        subprocess.Popen(command, creationflags=creationflags)
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            if cls.is_browser_available():
-                return str(browser_path)
-            time.sleep(0.5)
-        raise LoginError(
-            "Il browser si e' aperto ma non e' agganciabile dall'app. Chiudi eventuali finestre Chrome/Edge gia' aperte e riprova."
-        )
+        browser_path = cls.find_browser_executable()
+        return str(browser_path) if browser_path else "playwright"
 
     @classmethod
     def browser_profile_path(cls) -> str:
@@ -355,18 +333,33 @@ class MonsieurCuisineUploader:
 
 
 def run_monsieur_cuisine_import(recipe: RecipeData, headless: bool = True) -> None:
-    _ = headless
-    with MonsieurCuisineUploader() as uploader:
+    with MonsieurCuisineUploader(headless=headless) as uploader:
         uploader.ensure_logged_in_session()
         uploader.upload_to_mc(recipe)
 
 
 def connect_monsieur_cuisine_account(timeout_seconds: int = 180) -> str:
-    _ = timeout_seconds
-    return MonsieurCuisineUploader.launch_system_login_browser()
+    browser_label = MonsieurCuisineUploader.launch_system_login_browser()
+    with MonsieurCuisineUploader(headless=False) as uploader:
+        if not uploader.page:
+            raise LoginError("Pagina Playwright non inizializzata.")
+
+        uploader.page.goto(MonsieurCuisineUploader.LOGIN_URL, wait_until="domcontentloaded")
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            try:
+                uploader.ensure_logged_in_session()
+                MonsieurCuisineUploader.mark_session_verified()
+                return browser_label
+            except LoginError:
+                time.sleep(2)
+
+    raise LoginError(
+        "Login non completato entro il tempo previsto. Riprova e completa l'accesso nella finestra del browser aperta da Playwright."
+    )
 
 
 def validate_monsieur_cuisine_session() -> None:
-    with MonsieurCuisineUploader() as uploader:
+    with MonsieurCuisineUploader(headless=True) as uploader:
         uploader.ensure_logged_in_session()
     MonsieurCuisineUploader.mark_session_verified()

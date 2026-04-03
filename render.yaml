@@ -5,12 +5,3 @@ services:
     plan: starter
     autoDeploy: true
     healthCheckPath: /health
-    envVars:
-      - key: HEADLESS
-        value: "1"
-      - key: PLAYWRIGHT_DISABLE_SANDBOX
-        value: "1"
-      - key: LIDL_USERNAME
-        sync: false
-      - key: LIDL_PASSWORD
-        sync: false

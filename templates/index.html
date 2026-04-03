@@ -7,19 +7,27 @@
   </div>
   <h1 class="title">Estrai ricette e preparale per Monsieur Cuisine</h1>
   <p class="subtitle">
-    Incolla un URL GialloZafferano o Cookidoo, ottieni ingredienti, step e JSON pronti da copiare nel portale Monsieur Cuisine dal tuo browser normale.
+    Incolla un URL GialloZafferano o Cookidoo e ottieni una scheda guidata per compilare piu' velocemente il form ricetta di Monsieur Cuisine.
   </p>
 </section>
 
 <section class="panel">
   <div class="job-text" style="margin-bottom: 18px;">
-    Supporta GialloZafferano e Cookidoo. L'app non prova piu' a fare login: prepara soltanto i dati da copiare.
+    Supporta GialloZafferano e Cookidoo. L'app estrae titolo, ingredienti e step, prova a dividere ogni ingrediente in quantita', unita', nome e note e puo' adattare le dosi a un numero specifico di persone.
   </div>
 
   <form action="/imports" method="post" class="stack">
     <div class="field">
       <label for="recipe_url" class="label">URL ricetta</label>
       <input id="recipe_url" name="recipe_url" type="url" required placeholder="https://www.giallozafferano.it/..." class="input" />
+    </div>
+
+    <div class="field">
+      <label for="desired_servings" class="label">Adatta per quante persone?</label>
+      <input id="desired_servings" name="desired_servings" type="number" min="1" step="1" inputmode="numeric" placeholder="Es. 6" value="{{ default_desired_servings }}" class="input" />
+      <div class="job-text" style="margin-top: 0;">
+        Se lo compili, l'app prova a ridimensionare le quantita' con una proporzione semplice e passa il target anche alla AI per un adattamento piu' ragionato.
+      </div>
     </div>
 
     <button type="submit" class="button">

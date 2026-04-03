@@ -8,11 +8,47 @@
 
 {% include "partials/job_status.html" %}
 <script>
+  const INITIAL_REVIEW_MODE = {{ job.selected_review_mode|tojson }};
+
+  function getReviewMode() {
+    return window.localStorage.getItem("mcReviewMode") || INITIAL_REVIEW_MODE || "original";
+  }
+
+  function applyReviewMode() {
+    const mode = getReviewMode();
+
+    document.querySelectorAll("[data-review-mode]").forEach((node) => {
+      node.hidden = node.dataset.reviewMode !== mode;
+    });
+
+    document.querySelectorAll("[data-review-mode-toggle]").forEach((button) => {
+      const isActive = button.dataset.reviewModeToggle === mode;
+      button.classList.toggle("button-active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
+
+    document.querySelectorAll("[data-review-mode-label]").forEach((node) => {
+      node.textContent = mode === "adapted" ? "Bozza adattata" : "Originale estratto";
+    });
+  }
+
+  function setReviewMode(mode) {
+    window.localStorage.setItem("mcReviewMode", mode);
+    applyReviewMode();
+  }
+
+  function copyText(value) {
+    navigator.clipboard.writeText(value || "");
+  }
+
   function copyFromTarget(targetId) {
     const node = document.getElementById(targetId);
     if (!node) return;
     const text = node.value !== undefined ? node.value : node.innerText;
-    navigator.clipboard.writeText(text);
+    copyText(text);
   }
+
+  document.addEventListener("DOMContentLoaded", applyReviewMode);
+  document.body.addEventListener("htmx:afterSwap", applyReviewMode);
 </script>
 {% endblock %}

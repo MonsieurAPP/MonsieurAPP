@@ -8,10 +8,23 @@ import httpx
 from bs4 import BeautifulSoup
 from recipe_scrapers import scrape_html
 
-from app.models import RecipeData, RecipeStep
+from app.models import RecipeData, RecipeIngredient, RecipeStep
 
 
 LOGGER = logging.getLogger("monsieur_app.recipe")
+
+QUANTITY_PATTERN = r"\d+/\d+|\d+(?:[.,]\d+)?(?:\s+\d+/\d+)?|un|una|uno|mezzo|mezza"
+UNIT_PATTERN = (
+    r"kg|g|gr|grammi?|grammo|mg|ml|cl|dl|l|lt|litri?|litro|"
+    r"cucchiaio|cucchiai|cucchiaino|cucchiaini|tazze?|bicchieri?|"
+    r"bustin[ae]|buste?|spicchi?|ramett[oi]|fogli[ae]|foglioline|"
+    r"mazzi?|pizzichi?|presa|prese|fette?|fettine|"
+    r"scatolett[ae]|confezioni?|vasetti?|barattoli?|"
+    r"pezzi?|pezzetti?|patate|carote|zucchine|uova?|limoni?|lime|"
+    r"cipolle?|scalogni|pomodori?|pomodorini|mele?|pere?|banane?|"
+    r"arance?|mandarini|fragole|olive|filetti?|tranci"
+)
+QB_PATTERN = r"q\s*\.?\s*b\s*\.?|quanto basta"
 
 
 class RecipeExtractionError(Exception):
@@ -20,6 +33,134 @@ class RecipeExtractionError(Exception):
 
 def normalize_whitespace(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def normalize_fraction_characters(value: str) -> str:
+    normalized = value or ""
+    replacements = {
+        "½": "1/2",
+        "¼": "1/4",
+        "¾": "3/4",
+        "⅓": "1/3",
+        "⅔": "2/3",
+        "⅛": "1/8",
+    }
+    for source, replacement in replacements.items():
+        normalized = normalized.replace(source, replacement)
+    return normalized
+
+
+def cleanup_ingredient_name(value: str) -> str:
+    cleaned = normalize_whitespace(value)
+    cleaned = re.sub(r"^(di|della|del|dei|degli|delle)\s+", "", cleaned, flags=re.IGNORECASE)
+    cleaned = cleaned.strip(" .,;-")
+    return cleaned
+
+
+def parse_ingredient(raw_value: str) -> RecipeIngredient:
+    original_text = normalize_whitespace(normalize_fraction_characters(raw_value))
+    if not original_text:
+        return RecipeIngredient(original_text="", name="")
+
+    notes: list[str] = []
+    for match in re.findall(r"\(([^()]*)\)", original_text):
+        normalized = normalize_whitespace(match)
+        if normalized:
+            notes.append(normalized)
+
+    text = re.sub(r"\([^()]*\)", "", original_text).strip(" ,;-")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if re.match(rf"^(?:{QB_PATTERN})\b", text, flags=re.IGNORECASE):
+        name = cleanup_ingredient_name(re.sub(rf"^(?:{QB_PATTERN})\b", "", text, flags=re.IGNORECASE))
+        notes.insert(0, "quanto basta")
+        return RecipeIngredient(
+            original_text=original_text,
+            name=name or original_text,
+            notes=", ".join(dict.fromkeys(notes)) or None,
+        )
+
+    quantity_match = re.match(
+        rf"^(?P<quantity>{QUANTITY_PATTERN})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    quantity = quantity_match.group("quantity") if quantity_match else None
+    remainder = text[quantity_match.end():].strip(" ,;-") if quantity_match else text
+
+    unit_match = None
+    if quantity_match and remainder:
+        unit_match = re.match(
+            rf"^(?P<unit>{UNIT_PATTERN})\b",
+            remainder,
+            flags=re.IGNORECASE,
+        )
+
+    unit = unit_match.group("unit") if unit_match else None
+    name = remainder[unit_match.end():].strip(" ,;-") if unit_match else remainder
+
+    if quantity and unit and not name:
+        name = unit
+        unit = None
+
+    if not quantity:
+        trailing_qb_match = re.match(
+            rf"^(?P<name>.+?)\s+(?P<qb>{QB_PATTERN})$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if trailing_qb_match:
+            name = trailing_qb_match.group("name")
+            notes.insert(0, "quanto basta")
+
+    if not quantity and not unit:
+        trailing_quantity_match = re.match(
+            rf"^(?P<name>.+?)\s+(?P<quantity>{QUANTITY_PATTERN})(?:\s+(?P<unit>{UNIT_PATTERN}))?$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if trailing_quantity_match:
+            name = trailing_quantity_match.group("name")
+            quantity = trailing_quantity_match.group("quantity")
+            unit = trailing_quantity_match.group("unit")
+        else:
+            parts = text.split()
+            if len(parts) >= 2 and re.fullmatch(rf"(?:{UNIT_PATTERN})", parts[-1], flags=re.IGNORECASE):
+                trailing_unit = parts[-1]
+                trailing_quantity = parts[-2]
+                if re.fullmatch(rf"(?:{QUANTITY_PATTERN})", trailing_quantity, flags=re.IGNORECASE):
+                    unit = trailing_unit
+                    quantity = trailing_quantity
+                    name = " ".join(parts[:-2])
+            if not quantity and parts:
+                trailing_quantity = parts[-1]
+                if re.fullmatch(rf"(?:{QUANTITY_PATTERN})", trailing_quantity, flags=re.IGNORECASE):
+                    quantity = trailing_quantity
+                    name = " ".join(parts[:-1])
+
+    comma_parts = [part.strip() for part in name.split(",") if part.strip()]
+    if len(comma_parts) > 1:
+        name = comma_parts[0]
+        notes.extend(comma_parts[1:])
+
+    name = cleanup_ingredient_name(name)
+    if not name:
+        name = cleanup_ingredient_name(text)
+        quantity = None
+        unit = None
+
+    unique_notes = ", ".join(dict.fromkeys(note for note in notes if note)) or None
+    return RecipeIngredient(
+        original_text=original_text,
+        name=name or original_text,
+        quantity=normalize_whitespace(quantity) if quantity else None,
+        unit=normalize_whitespace(unit) if unit else None,
+        notes=unique_notes,
+    )
+
+
+def parse_ingredients(items: list[str]) -> list[RecipeIngredient]:
+    return [parse_ingredient(item) for item in items if normalize_whitespace(item)]
 
 
 def detect_source(url: str) -> str:
@@ -155,6 +296,7 @@ async def extract_giallozafferano(url: str) -> RecipeData:
         source_site="giallozafferano",
         title=normalize_whitespace(scraper.title()),
         ingredients=ingredients,
+        structured_ingredients=parse_ingredients(ingredients),
         steps=steps,
         yield_text=normalize_whitespace(scraper.yields() or ""),
         total_time_minutes=scraper.total_time(),
@@ -276,6 +418,7 @@ async def extract_cookidoo(url: str) -> RecipeData:
         source_site="cookidoo",
         title=title,
         ingredients=ingredients,
+        structured_ingredients=parse_ingredients(ingredients),
         steps=steps,
         yield_text=normalize_whitespace(servings_node.get_text(" ", strip=True)) if servings_node else structured.get("recipeYield"),
         total_time_minutes=total_seconds // 60 if total_seconds else None,

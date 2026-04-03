@@ -131,6 +131,16 @@ input {
   gap: 8px;
 }
 
+.account-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  border: 1px solid rgba(252, 211, 77, 0.14);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
 .field-row {
   display: flex;
   align-items: center;
@@ -199,6 +209,31 @@ input {
   background: rgba(255, 255, 255, 0.09);
 }
 
+.button-disabled,
+.button-disabled:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  color: #a8a29e;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.button-wide {
+  width: 100%;
+}
+
+.button-active {
+  background: rgba(252, 211, 77, 0.18);
+  border-color: rgba(252, 211, 77, 0.42);
+  color: #fef3c7;
+}
+
+.toggle-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .list {
   display: grid;
   gap: 12px;
@@ -257,9 +292,15 @@ input {
 
 .status-queued,
 .status-extracting,
-.status-uploading {
+.status-uploading,
+.status-adapting {
   background: var(--warning-bg);
   color: var(--warning);
+}
+
+.status-awaiting_review {
+  background: rgba(96, 165, 250, 0.14);
+  color: #bfdbfe;
 }
 
 .status-completed {
@@ -358,6 +399,12 @@ input {
   border: 1px solid rgba(251, 113, 133, 0.2);
   background: rgba(251, 113, 133, 0.1);
   color: #ffe4e6;
+}
+
+.alert-success {
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  background: rgba(52, 211, 153, 0.1);
+  color: #d1fae5;
 }
 
 @media (min-width: 640px) {

@@ -2,6 +2,11 @@ import asyncio
 import os
 
 import uvicorn
+from dotenv import load_dotenv
+
+
+load_dotenv(".env.local")
+load_dotenv()
 
 
 if __name__ == "__main__":
