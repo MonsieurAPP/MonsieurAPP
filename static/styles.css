@@ -234,6 +234,33 @@ input {
   gap: 8px;
 }
 
+.prompt-details {
+  display: grid;
+  gap: 12px;
+}
+
+.prompt-summary {
+  list-style: none;
+}
+
+.prompt-summary::-webkit-details-marker {
+  display: none;
+}
+
+.prompt-textarea {
+  min-height: 220px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.prompt-box {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 14px;
+}
+
 .list {
   display: grid;
   gap: 12px;
@@ -361,6 +388,11 @@ input {
   display: grid;
   gap: 12px;
   margin-top: 12px;
+}
+
+.step-grid {
+  display: grid;
+  gap: 12px;
 }
 
 .stat-card {

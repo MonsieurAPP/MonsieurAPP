@@ -43,6 +43,24 @@
     </div>
   </div>
 
+  {% if prompt_saved %}
+    <div class="alert alert-success">
+      Template prompt salvato. Verra' usato per le prossime richieste AI.
+    </div>
+  {% endif %}
+
+  {% if prompt_error %}
+    <div class="alert alert-danger">
+      {{ prompt_error }}
+    </div>
+  {% endif %}
+
+  {% if job.adaptation and job.adaptation.mode != 'ai-live' %}
+    <div class="alert alert-danger">
+      Adattamento AI non disponibile. Non puoi confermare la ricetta, esportarla o proseguire verso Monsieur Cuisine finche' il provider AI non torna operativo.
+    </div>
+  {% endif %}
+
   <div class="info-box">
     <div class="row-between">
       <div>
@@ -60,34 +78,12 @@
       <form action="/imports/{{ job.id }}/confirm" method="post" hx-post="/imports/{{ job.id }}/confirm" hx-target="#job-status" hx-swap="outerHTML" style="margin-top: 8px;">
         <button type="submit" class="button">Conferma ricetta pronta</button>
       </form>
+    {% elif job.adaptation and job.adaptation.mode != 'ai-live' and not job.confirmed_at %}
+      <span class="button button-disabled" style="margin-top: 8px; width: 100%;">Conferma bloccata: AI non disponibile</span>
     {% endif %}
   </div>
 
   {% if job.recipe_data %}
-    <div class="info-box">
-      <h2 class="label">Anteprima ricetta</h2>
-      <div class="preview-grid">
-        <div class="stat-card">
-          <div class="stat-label">Ingredienti</div>
-          <div class="stat-value">{{ job.recipe_data.ingredients|length }}</div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Step</div>
-          <div class="stat-value">{{ job.recipe_data.steps|length }}</div>
-        </div>
-        {% if job.adaptation %}
-          <div class="stat-card">
-            <div class="stat-label">Adattamento</div>
-            <div class="stat-value">{{ 'consigliato' if job.adaptation.recommended else 'non necessario' }}</div>
-          </div>
-          <div class="stat-card">
-            <div class="stat-label">Warning</div>
-            <div class="stat-value">{{ job.adaptation.warnings|length }}</div>
-          </div>
-        {% endif %}
-      </div>
-    </div>
-
     {% if job.desired_servings %}
       <div class="info-box">
         <div class="row-between">
@@ -110,8 +106,8 @@
       <div class="info-box">
         <div class="row-between">
           <h2 class="label">Adattamento Monsieur Cuisine</h2>
-          <div class="status-pill status-{{ 'awaiting_review' if job.adaptation.recommended else 'completed' }}">
-            {{ job.adaptation.status }}
+          <div class="status-pill status-{{ 'completed' if job.adaptation.mode == 'ai-live' else 'failed' }}">
+            {{ job.adaptation.status if job.adaptation.mode == 'ai-live' else 'ai_unavailable' }}
           </div>
         </div>
         <div class="job-text" style="margin-top: 0;">
@@ -120,67 +116,75 @@
         <div class="job-text" style="margin-top: 0;">
           Modalita': {{ job.adaptation.mode }}{% if job.adaptation.model %} | Modello: {{ job.adaptation.model }}{% else %} | Nessun provider AI invocato in questa fase{% endif %}
         </div>
-        {% if job.adaptation.reason %}
-          <div class="job-text" style="margin-top: 0;">
-            Motivo: {{ job.adaptation.reason }}
+        {% if job.adaptation.mode != 'ai-live' %}
+          <div class="job-text" style="margin-top: 0; color: #ffe4e6;">
+            Il job e' bloccato: l'adattamento AI reale e' obbligatorio per proseguire.
           </div>
         {% endif %}
-        <div class="row-between" style="align-items: center; margin-top: 6px;">
+        {% if job.adaptation.reason %}
           <div class="job-text" style="margin-top: 0;">
-            Vista attiva: <strong data-review-mode-label>Originale estratto</strong>
+            Logica di sincronizzazione: {{ job.adaptation.reason }}
           </div>
-          <div class="toggle-group">
-            <button type="button" class="button button-secondary" data-review-mode-toggle="original" aria-pressed="true" onclick="setReviewMode('original')">Originale</button>
-            <button type="button" class="button button-secondary" data-review-mode-toggle="adapted" aria-pressed="false" onclick="setReviewMode('adapted')">Bozza adattata</button>
+        {% endif %}
+        {% if job.adaptation.final_note %}
+          <div class="job-text" style="margin-top: 0;">
+            Nota finale: {{ job.adaptation.final_note }}
           </div>
+        {% endif %}
+        <div class="job-text" style="margin-top: 0;">
+          Solo i passaggi classificati come Monsieur Cuisine vengono esportati verso la macchina. I passaggi manuali ed esterni restano visibili separatamente in questa pagina.
         </div>
       </div>
-
-      {% if job.adaptation.warnings %}
-        <div class="info-box">
-          <h2 class="label">Warning adattamento</h2>
-          <div class="stack" style="gap: 10px;">
-            {% for warning in job.adaptation.warnings %}
-              <div class="alert alert-warning" style="padding: 12px 14px;">{{ warning }}</div>
-            {% endfor %}
-          </div>
-        </div>
-      {% endif %}
-
-      {% if job.adaptation.ingredient_notes %}
-        <div class="info-box">
-          <h2 class="label">Note ingredienti per revisione</h2>
-          <div class="stack" style="gap: 14px;">
-            {% for note in job.adaptation.ingredient_notes %}
-              <div class="stat-card">
-                <div class="label">Ingrediente {{ note.ingredient_index }}</div>
-                <div class="job-text">Problema: {{ note.issue }}</div>
-                <div class="job-text">Suggerimento: {{ note.suggestion }}</div>
-              </div>
-            {% endfor %}
-          </div>
-        </div>
-      {% endif %}
 
       <div class="info-box">
         <div class="row-between">
-          <h2 class="label">Base per upload futuro</h2>
-          <div class="status-pill status-{{ 'completed' if job.selected_review_mode == 'adapted' else 'queued' }}">
-            {{ 'bozza adattata' if job.selected_review_mode == 'adapted' else 'originale' }}
-          </div>
+          <h2 class="label">Prompt AI Monsieur Cuisine</h2>
+          <div class="status-pill status-completed">persistente</div>
         </div>
         <div class="job-text" style="margin-top: 0;">
-          Questa scelta viene salvata nel job e potra' essere usata come base dell'upload automatico quando collegheremo il passaggio finale verso Monsieur Cuisine.
+          Qui puoi vedere il prompt effettivamente usato nel job e modificare il template che verra' applicato alle richieste future.
         </div>
-        <form action="/imports/{{ job.id }}/selection" method="post" hx-post="/imports/{{ job.id }}/selection" hx-target="#job-status" hx-swap="outerHTML" class="toggle-group" style="margin-top: 8px;">
-          <input type="hidden" name="review_mode" value="original" />
-          <button type="submit" class="button button-secondary{% if job.selected_review_mode == 'original' %} button-active{% endif %}">Usa originale</button>
-        </form>
-        <form action="/imports/{{ job.id }}/selection" method="post" hx-post="/imports/{{ job.id }}/selection" hx-target="#job-status" hx-swap="outerHTML" class="toggle-group" style="margin-top: 8px;">
-          <input type="hidden" name="review_mode" value="adapted" />
-          <button type="submit" class="button button-secondary{% if job.selected_review_mode == 'adapted' %} button-active{% endif %}" {% if not job.adaptation %}disabled{% endif %}>Usa proposta AI</button>
-        </form>
+
+        <details class="prompt-details" data-persistent-details="job-prompt-used">
+          <summary class="button button-secondary prompt-summary">Mostra prompt usato nel job</summary>
+          {% if job.adaptation.prompt_text %}
+            <textarea class="input prompt-textarea" rows="18" readonly>{{ job.adaptation.prompt_text }}</textarea>
+          {% else %}
+            <div class="job-text prompt-box">
+              Nessun prompt AI completo disponibile per questo job: probabilmente e' stato usato il fallback deterministico o la chiamata AI non e' partita.
+            </div>
+          {% endif %}
+        </details>
+
+        <details class="prompt-details" data-persistent-details="job-prompt-template">
+          <summary class="button button-secondary prompt-summary">Modifica prompt per richieste future</summary>
+          <form
+            action="/imports/{{ job.id }}/prompt-template"
+            method="post"
+            hx-post="/imports/{{ job.id }}/prompt-template"
+            hx-target="#job-status"
+            hx-swap="outerHTML"
+            class="stack"
+            style="margin-top: 12px;"
+          >
+            <div class="job-text" style="margin-top: 0;">
+              Il testo sotto e' persistente sul server locale. Le modifiche non rigenerano questo job, ma entrano in vigore dal prossimo import.
+            </div>
+            <textarea name="prompt_template" class="input prompt-textarea" rows="18">{{ prompt_template }}</textarea>
+            <div class="toggle-group">
+              <button type="submit" class="button button-secondary">Salva template</button>
+              <button
+                type="button"
+                class="button button-secondary"
+                onclick='this.closest("form").querySelector("textarea[name=prompt_template]").value = {{ default_prompt_template|tojson }}'
+              >
+                Ripristina default
+              </button>
+            </div>
+          </form>
+        </details>
       </div>
+
     {% endif %}
 
     <div class="info-box">
@@ -209,17 +213,6 @@
       </div>
     {% endif %}
 
-    <div class="info-box">
-      <div class="row-between">
-        <h2 class="label">Compilazione guidata ingredienti</h2>
-        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-ingredients-guide')">Copia guida</button>
-      </div>
-      <div class="job-text" style="margin-top: 0;">
-        Monsieur Cuisine ora richiede un ingrediente alla volta. Qui sotto trovi ogni riga gia' spezzata nei campi piu' utili da incollare nel form.
-      </div>
-      <textarea id="recipe-ingredients-guide" class="input" rows="14" style="margin-top: 12px;">{{ job.ingredients_guide_text }}</textarea>
-    </div>
-
     {% if job.scaled_ingredients_guide_text %}
       <div class="info-box">
         <div class="row-between">
@@ -230,119 +223,78 @@
       </div>
     {% endif %}
 
-    {% if job.recipe_data.structured_ingredients %}
-      <div class="info-box">
-        <h2 class="label">Ingredienti separati</h2>
-        <div class="stack" style="gap: 14px;">
-          {% for ingredient in job.recipe_data.structured_ingredients %}
-            <div class="stat-card">
-              <div class="row-between" style="align-items: center;">
-                <div class="label">Ingrediente {{ loop.index }}</div>
-                <button type="button" class="button button-secondary" onclick='copyText({{ ingredient.original_text|tojson }})'>Copia riga originale</button>
-              </div>
-
-              <div class="info-grid" style="margin-top: 12px;">
-                <div>
-                  <span class="info-label">Quantita'</span>
-                  <div class="info-value">{{ ingredient.quantity or "-" }}</div>
-                  <button type="button" class="button button-secondary" style="margin-top: 10px;" onclick='copyText({{ (ingredient.quantity or "")|tojson }})'>Copia quantita'</button>
-                </div>
-                <div>
-                  <span class="info-label">Unita'</span>
-                  <div class="info-value">{{ ingredient.unit or "-" }}</div>
-                  <button type="button" class="button button-secondary" style="margin-top: 10px;" onclick='copyText({{ (ingredient.unit or "")|tojson }})'>Copia unita'</button>
-                </div>
-              </div>
-
-              <div class="info-grid" style="margin-top: 12px;">
-                <div>
-                  <span class="info-label">Nome</span>
-                  <div class="info-value">{{ ingredient.name }}</div>
-                  <button type="button" class="button button-secondary" style="margin-top: 10px;" onclick='copyText({{ ingredient.name|tojson }})'>Copia nome</button>
-                </div>
-                <div>
-                  <span class="info-label">Note</span>
-                  <div class="info-value">{{ ingredient.notes or "-" }}</div>
-                  <button type="button" class="button button-secondary" style="margin-top: 10px;" onclick='copyText({{ (ingredient.notes or "")|tojson }})'>Copia note</button>
-                </div>
-              </div>
-            </div>
-          {% endfor %}
-        </div>
-      </div>
-    {% endif %}
-
-    <div data-review-mode="original">
-      <div class="info-box">
-        <div class="row-between">
-          <h2 class="label">Step con parametri</h2>
-          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-steps')">Copia step</button>
-        </div>
-        <textarea id="recipe-steps" class="input" rows="18">{{ job.steps_text }}</textarea>
-      </div>
-
-      <div class="info-box">
-        <div class="row-between">
-          <h2 class="label">Formato pronto per Monsieur Cuisine</h2>
-          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-mc-steps')">Copia formato MC</button>
-        </div>
-        <textarea id="recipe-mc-steps" class="input" rows="18">{{ job.mc_steps_text }}</textarea>
-      </div>
-
-      <div class="info-box">
-        <h2 class="label">Step separati</h2>
-        <div class="stack" style="gap: 14px;">
-          {% for step in job.recipe_data.steps %}
-            <div class="stat-card">
-              <div class="row-between" style="align-items: center;">
-                <div class="label">Step {{ loop.index }}</div>
-                <button type="button" class="button button-secondary" onclick="copyFromTarget('step-card-{{ loop.index }}')">Copia step</button>
-              </div>
-
-              <textarea id="step-card-{{ loop.index }}" class="input" rows="8" style="margin-top: 12px;">Descrizione: {{ step.description }}
-Tempo (min): {{ (step.duration_seconds // 60) if step.duration_seconds is not none else '-' }}
-Temperatura (C): {{ step.temperature_c if step.temperature_c is not none else '-' }}
-Velocita: {{ step.speed if step.speed else '-' }}
-Reverse: {{ 'Si' if step.reverse else 'No' }}</textarea>
-            </div>
-          {% endfor %}
-        </div>
-      </div>
-    </div>
-
-    <div data-review-mode="adapted" hidden>
+    {% if job.adaptation and job.adaptation.adapted_steps %}
       {% if job.adapted_steps_text %}
         <div class="info-box">
           <div class="row-between">
-            <h2 class="label">Bozza adattamento step</h2>
-            <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-adapted-steps')">Copia bozza</button>
-          </div>
-          <div class="job-text" style="margin-top: 0;">
-            Questa vista evidenzia la proposta sintetizzata per Monsieur Cuisine: oggi e' ancora deterministica, ma e' gia' separata dall'estratto originale.
+            <h2 class="label">Timeline adattamento sincronizzata</h2>
+            <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-adapted-steps')">Copia timeline</button>
           </div>
           <textarea id="recipe-adapted-steps" class="input" rows="18">{{ job.adapted_steps_text }}</textarea>
         </div>
       {% endif %}
-    </div>
 
-    {% if job.recipe_json %}
-      <div class="info-box" data-review-mode="original">
-        <div class="row-between">
-          <h2 class="label">JSON pronto</h2>
-          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-json')">Copia tutto</button>
-        </div>
-        <textarea id="recipe-json" class="input" rows="18">{{ job.recipe_json }}</textarea>
-      </div>
-    {% endif %}
+      {% if job.adaptation.adapted_steps %}
+        <div class="info-box">
+          <div class="row-between">
+            <h2 class="label">PASSAGGI</h2>
+            <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-steps-cards')">Copia passaggi</button>
+          </div>
+          <div class="job-text" style="margin-top: 0;">
+            Ogni passaggio e' mostrato in una scheda separata. Il badge riporta <strong>ESTERNO</strong> se l'azione va fatta fuori dal Monsieur, altrimenti mostra il nome della fase o del programma Monsieur Cuisine.
+          </div>
+          <div class="stack" style="gap: 14px; margin-top: 10px;">
+            {% for step in job.adaptation.adapted_steps %}
+              {% set badge_label = step.program or 'ESTERNO' %}
+              {% set is_machine_step = step.program %}
+              <div class="stat-card">
+                <div class="row-between" style="align-items: center; gap: 12px;">
+                  <div class="label">Passaggio {{ loop.index }}</div>
+                  <div class="status-pill status-{{ 'completed' if is_machine_step else 'queued' }}">{{ badge_label }}</div>
+                </div>
+                <div class="step-grid" style="margin-top: 12px;">
+                  <div>
+                    <div class="stat-label">{{ 'Fase' if is_machine_step else 'Azione' }}</div>
+                    <div class="info-value">{{ step.description }}</div>
+                  </div>
+                  <div>
+                    <div class="stat-label">Ambiente</div>
+                    <div class="info-value">{{ 'Monsieur Cuisine' if is_machine_step else 'Fuori dal Monsieur' }}</div>
+                  </div>
+                  <div>
+                    <div class="stat-label">{{ 'Programma Monsieur Cuisine' if is_machine_step else 'Tipo' }}</div>
+                    <div class="info-value">{{ step.program or step.parameters_summary or 'Attivita esterna' }}</div>
+                  </div>
+                  {% if is_machine_step %}
+                    <div>
+                      <div class="stat-label">Accessorio</div>
+                      <div class="info-value">{{ step.accessory or '-' }}</div>
+                    </div>
+                    <div>
+                      <div class="stat-label">Programma/Parametri</div>
+                      <div class="info-value">{{ step.parameters_summary or '-' }}</div>
+                    </div>
+                  {% endif %}
+                  <div>
+                    <div class="stat-label">Istruzioni dettagliate</div>
+                    <div class="info-value">{{ step.detailed_instructions or step.description }}</div>
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+          <textarea id="recipe-steps-cards" class="input" rows="18" style="margin-top: 12px;">{% for step in job.adaptation.adapted_steps %}PASSAGGIO {{ loop.index }}
+Badge: {{ step.program or 'ESTERNO' }}
+Ambiente: {{ 'Monsieur Cuisine' if step.program else 'Fuori dal Monsieur' }}
+{{ 'Fase' if step.program else 'Azione' }}: {{ step.description }}
+{{ 'Programma Monsieur Cuisine' if step.program else 'Tipo' }}: {{ step.program or step.parameters_summary or 'Attivita esterna' }}
+{% if step.program %}Accessorio: {{ step.accessory or '-' }}
+Programma/Parametri: {{ step.parameters_summary or '-' }}
+{% endif %}Istruzioni dettagliate: {{ step.detailed_instructions or step.description }}
 
-    {% if job.adaptation_json %}
-      <div class="info-box" data-review-mode="adapted" hidden>
-        <div class="row-between">
-          <h2 class="label">JSON adattamento</h2>
-          <button type="button" class="button button-secondary" onclick="copyFromTarget('adaptation-json')">Copia adattamento</button>
+{% endfor %}</textarea>
         </div>
-        <textarea id="adaptation-json" class="input" rows="18">{{ job.adaptation_json }}</textarea>
-      </div>
+      {% endif %}
     {% endif %}
 
     <div class="info-box">
@@ -350,6 +302,8 @@ Reverse: {{ 'Si' if step.reverse else 'No' }}</textarea>
         <h2 class="label">Portale Monsieur Cuisine</h2>
         {% if job.confirmed_at %}
           <a class="button button-secondary" href="https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart#mc-import={{ job.id }}" target="_blank" rel="noreferrer">Apri con Tampermonkey</a>
+        {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
+          <span class="button button-secondary button-disabled">Bloccato: AI non disponibile</span>
         {% else %}
           <span class="button button-secondary button-disabled">Conferma prima la ricetta</span>
         {% endif %}
@@ -357,6 +311,8 @@ Reverse: {{ 'Si' if step.reverse else 'No' }}</textarea>
       <div class="job-text" style="margin-top: 0;">
         {% if job.confirmed_at %}
           Apri Monsieur Cuisine dal bottone qui sopra: lo userscript recuperera' dalla nostra app il job {{ job.id[:8] }} confermato con la versione selezionata e compilera' il form partendo dal payload finale.
+        {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
+          Il passaggio verso Monsieur Cuisine e' bloccato finche' l'adattamento AI reale non torna disponibile e il job non viene rigenerato con successo.
         {% else %}
           Dopo la conferma finale comparira' il passaggio verso Monsieur Cuisine, da cui Tampermonkey potra' leggere la ricetta confermata.
         {% endif %}

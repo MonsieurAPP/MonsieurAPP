@@ -14,7 +14,7 @@ class ImportJob:
     desired_servings: Optional[int] = None
     status: str = "queued"
     message: str = "In coda per l'estrazione"
-    selected_review_mode: str = "original"
+    selected_review_mode: str = "adapted"
     confirmed_at: Optional[datetime] = None
     source_servings: Optional[int] = None
     scaling_factor: Optional[float] = None

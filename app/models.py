@@ -26,6 +26,11 @@ class RecipeStep:
 @dataclass
 class RecipeAdaptedStep:
     description: str
+    environment: str = "mc"
+    program: Optional[str] = None
+    parameters_summary: Optional[str] = None
+    accessory: Optional[str] = None
+    detailed_instructions: Optional[str] = None
     duration_seconds: Optional[int] = None
     temperature_c: Optional[int] = None
     speed: Optional[str] = None
@@ -49,8 +54,10 @@ class RecipeAdaptation:
     mode: str = "deterministic-draft"
     model: Optional[str] = None
     prompt_version: Optional[str] = None
+    prompt_text: Optional[str] = None
     summary: Optional[str] = None
     reason: Optional[str] = None
+    final_note: Optional[str] = None
     warnings: list[str] = field(default_factory=list)
     adapted_steps: list[RecipeAdaptedStep] = field(default_factory=list)
     ingredient_notes: list[IngredientAdaptationNote] = field(default_factory=list)

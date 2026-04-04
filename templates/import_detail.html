@@ -8,33 +8,37 @@
 
 {% include "partials/job_status.html" %}
 <script>
-  const INITIAL_REVIEW_MODE = {{ job.selected_review_mode|tojson }};
+  const JOB_ID = {{ job.id|tojson }};
 
-  function getReviewMode() {
-    return window.localStorage.getItem("mcReviewMode") || INITIAL_REVIEW_MODE || "original";
+  function getDetailsStorageKey(detailId) {
+    return `mcDetailState:${JOB_ID}:${detailId}`;
   }
 
-  function applyReviewMode() {
-    const mode = getReviewMode();
-
-    document.querySelectorAll("[data-review-mode]").forEach((node) => {
-      node.hidden = node.dataset.reviewMode !== mode;
-    });
-
-    document.querySelectorAll("[data-review-mode-toggle]").forEach((button) => {
-      const isActive = button.dataset.reviewModeToggle === mode;
-      button.classList.toggle("button-active", isActive);
-      button.setAttribute("aria-pressed", isActive ? "true" : "false");
-    });
-
-    document.querySelectorAll("[data-review-mode-label]").forEach((node) => {
-      node.textContent = mode === "adapted" ? "Bozza adattata" : "Originale estratto";
+  function restorePersistentDetailsState() {
+    document.querySelectorAll("details[data-persistent-details]").forEach((node) => {
+      const detailId = node.dataset.persistentDetails;
+      const isOpen = window.localStorage.getItem(getDetailsStorageKey(detailId)) === "1";
+      node.open = isOpen;
     });
   }
 
-  function setReviewMode(mode) {
-    window.localStorage.setItem("mcReviewMode", mode);
-    applyReviewMode();
+  function bindPersistentDetailsState() {
+    document.querySelectorAll("details[data-persistent-details]").forEach((node) => {
+      if (node.dataset.detailsBound === "1") {
+        return;
+      }
+
+      node.addEventListener("toggle", () => {
+        const detailId = node.dataset.persistentDetails;
+        window.localStorage.setItem(getDetailsStorageKey(detailId), node.open ? "1" : "0");
+      });
+      node.dataset.detailsBound = "1";
+    });
+  }
+
+  function applyPageState() {
+    restorePersistentDetailsState();
+    bindPersistentDetailsState();
   }
 
   function copyText(value) {
@@ -48,7 +52,7 @@
     copyText(text);
   }
 
-  document.addEventListener("DOMContentLoaded", applyReviewMode);
-  document.body.addEventListener("htmx:afterSwap", applyReviewMode);
+  document.addEventListener("DOMContentLoaded", applyPageState);
+  document.body.addEventListener("htmx:afterSwap", applyPageState);
 </script>
 {% endblock %}
