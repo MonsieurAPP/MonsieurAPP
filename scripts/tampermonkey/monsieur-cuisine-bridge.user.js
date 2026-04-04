@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.1
+// @version      0.2.4
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -136,7 +136,126 @@
     return { jobId: payload.jobId, source: "latest" };
   }
 
+  function normalizeStepEnvironment(step) {
+    const environment = normalizeText(step?.environment || "mc").toLowerCase();
+    return environment || "mc";
+  }
+
+  function stepHasExplicitEnvironment(step) {
+    return Boolean(normalizeText(step?.environment || ""));
+  }
+
+  function normalizeStepProgram(step) {
+    return normalizeText(step?.program || "");
+  }
+
+  function isTransitionLikeStep(step) {
+    const program = normalizeStepProgram(step).toLowerCase();
+    const signature = buildStepSignature(step).toLowerCase();
+
+    if (program === "prelavaggio") {
+      return true;
+    }
+
+    return /lavare il boccale|lava il boccale|sciacquare il boccale|risciacquare il boccale|svuotare il boccale|svuota il boccale|pulire il boccale|prelavaggio/.test(signature);
+  }
+
+  function shouldUseProgramFallback(rawSteps) {
+    if (!rawSteps.length) {
+      return false;
+    }
+
+    const hasAnyExplicitEnvironment = rawSteps.some((step) => stepHasExplicitEnvironment(step));
+    if (hasAnyExplicitEnvironment) {
+      return false;
+    }
+
+    return rawSteps.some((step) => normalizeStepProgram(step));
+  }
+
+  function buildStepSignature(step) {
+    return normalizeText(step?.description || step?.detailedInstructions || "");
+  }
+
+  function buildIgnoredStepSignatureCounts(payload) {
+    const counts = new Map();
+
+    for (const bucket of [payload.manualSteps, payload.transitionSteps]) {
+      if (!Array.isArray(bucket)) continue;
+
+      for (const step of bucket) {
+        const signature = buildStepSignature(step);
+        if (!signature) continue;
+        counts.set(signature, (counts.get(signature) || 0) + 1);
+      }
+    }
+
+    return counts;
+  }
+
+  function filterMachineSteps(rawSteps, ignoredSignatureCounts, preferOperationalTimeline, useProgramFallback) {
+    let ignoredCount = 0;
+
+    const machineSteps = rawSteps.filter((step) => {
+      if (!step || typeof step !== "object") {
+        return false;
+      }
+
+      if (stepHasExplicitEnvironment(step)) {
+        const keepStep = normalizeStepEnvironment(step) === "mc";
+        if (!keepStep) {
+          ignoredCount += 1;
+        }
+        return keepStep;
+      }
+
+      if (useProgramFallback) {
+        const keepStep = Boolean(normalizeStepProgram(step)) && !isTransitionLikeStep(step);
+        if (!keepStep) {
+          ignoredCount += 1;
+        }
+        return keepStep;
+      }
+
+      if (!preferOperationalTimeline) {
+        const signature = buildStepSignature(step);
+        const remainingIgnored = signature ? (ignoredSignatureCounts.get(signature) || 0) : 0;
+        if (remainingIgnored > 0) {
+          ignoredCount += 1;
+          if (remainingIgnored === 1) {
+            ignoredSignatureCounts.delete(signature);
+          } else {
+            ignoredSignatureCounts.set(signature, remainingIgnored - 1);
+          }
+          return false;
+        }
+      }
+
+      return true;
+    });
+
+    return {
+      machineSteps,
+      ignoredCount,
+    };
+  }
+
   function normalizeExportedRecipe(payload) {
+    const operationalTimeline = Array.isArray(payload.operationalTimeline)
+      ? payload.operationalTimeline
+      : [];
+    const preferOperationalTimeline = operationalTimeline.length > 0;
+    const rawSteps = preferOperationalTimeline
+      ? operationalTimeline
+      : Array.isArray(payload.steps)
+        ? payload.steps
+        : [];
+    const useProgramFallback = shouldUseProgramFallback(rawSteps);
+    const ignoredSignatureCounts = buildIgnoredStepSignatureCounts(payload);
+    const { machineSteps, ignoredCount } = filterMachineSteps(rawSteps, ignoredSignatureCounts, preferOperationalTimeline, useProgramFallback);
+    const manualStepCount = Array.isArray(payload.manualSteps) ? payload.manualSteps.length : 0;
+    const transitionStepCount = Array.isArray(payload.transitionSteps) ? payload.transitionSteps.length : 0;
+
     return {
       title: payload.title,
       sourceUrl: payload.sourceUrl,
@@ -154,15 +273,16 @@
             finalText: ingredient.finalText || "",
           }))
         : [],
-      steps: Array.isArray(payload.steps)
-        ? payload.steps.map((step) => ({
-            description: step.description,
-            durationSeconds: step.durationSeconds,
-            temperatureC: step.temperatureC,
-            speed: step.speed,
-            reverse: Boolean(step.reverse),
-          }))
-        : [],
+      steps: machineSteps.map((step) => ({
+        description: step.description || step.detailedInstructions || "",
+        durationSeconds: step.durationSeconds,
+        temperatureC: step.temperatureC,
+        speed: step.speed,
+        reverse: Boolean(step.reverse),
+      })),
+      ignoredNonMachineStepsCount: preferOperationalTimeline
+        ? Math.max(0, rawSteps.length - machineSteps.length)
+        : Math.max(ignoredCount, manualStepCount + transitionStepCount),
       yieldText: payload.yieldText || null,
       totalTimeMinutes: payload.totalTimeMinutes || null,
       exportMode: payload.exportMode || "selected",
@@ -174,7 +294,11 @@
 
   async function fetchRecipeFromApp(jobId) {
     const payload = await apiRequest("GET", `/api/imports/${jobId}/export?mode=selected`);
-    return normalizeExportedRecipe(payload);
+    const recipe = normalizeExportedRecipe(payload);
+    if (recipe.ignoredNonMachineStepsCount) {
+      log(`Ignorati ${recipe.ignoredNonMachineStepsCount} passaggi non Monsieur Cuisine dal payload esportato.`);
+    }
+    return recipe;
   }
 
   function normalizeText(value) {
@@ -523,9 +647,13 @@
   }
 
   function createRecipePanel(recipe, onApply, onDismiss) {
+    const ignoredStepsNote = recipe.ignoredNonMachineStepsCount
+      ? `<br>${recipe.ignoredNonMachineStepsCount} passaggi esterni/manuali ignorati automaticamente`
+      : "";
+
     return createPanel({
       title: "Ricetta confermata pronta",
-      bodyHtml: `<strong>${escapeHtml(recipe.title)}</strong><br>${recipe.ingredients.length} ingredienti, ${recipe.steps.length} step`,
+      bodyHtml: `<strong>${escapeHtml(recipe.title)}</strong><br>${recipe.ingredients.length} ingredienti, ${recipe.steps.length} step Monsieur Cuisine${ignoredStepsNote}`,
       primaryLabel: "Leggi ricetta confermata",
       onPrimary: onApply,
       secondaryLabel: "Chiudi",
@@ -1046,6 +1174,78 @@
     };
   }
 
+  function collectStepButtonText(element) {
+    if (!element) return "";
+
+    return normalizeText([
+      element.textContent,
+      element.getAttribute?.("aria-label"),
+      element.getAttribute?.("title"),
+      element.getAttribute?.("data-testid"),
+      element.className,
+      element.querySelector?.("img")?.getAttribute("src"),
+      element.querySelector?.("i")?.className,
+    ].filter(Boolean).join(" ")).toLowerCase();
+  }
+
+  function findVisibleStepCards() {
+    return visibleElementsFromSelectors([
+      "[data-testid='recipe-step']",
+      ".create-recipe-step-group-content .v-card",
+      ".create-recipe-step-list .v-card",
+      ".create-recipe-step-group-content [class*='step-card' i]",
+      ".create-recipe-step-list [class*='step-card' i]",
+    ]).filter((element) => {
+      const text = collectStepButtonText(element);
+      if (!text) return false;
+
+      return !/inserisci il tuo primo passaggio|inserisci il primo passaggio|aggiungi step|aggiungi fase|add step|new step/.test(text);
+    });
+  }
+
+  function sortAddStepButtons(candidates, index) {
+    const stepCards = findVisibleStepCards().sort((left, right) => {
+      return right.getBoundingClientRect().bottom - left.getBoundingClientRect().bottom;
+    });
+    const lastStepCardBottom = stepCards[0]?.getBoundingClientRect().bottom ?? Number.NEGATIVE_INFINITY;
+
+    return uniqueElements(candidates)
+      .filter((element) => element instanceof HTMLElement && !isElementDisabled(element))
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        const text = collectStepButtonText(element);
+        const isFirstStepTarget = /inserisci il tuo primo passaggio|inserisci il primo passaggio|first step/.test(text);
+        const isAddStepTarget = /aggiungi step|aggiungi fase|add step|new step|mdi-plus|glyphs-btn-step|btn-step|plus/.test(text);
+        const isBelowLastCard = rect.top >= lastStepCardBottom - 24;
+        let score = rect.top * 1000 + rect.left;
+
+        if (index === 0 && isFirstStepTarget) score += 1000000;
+        if (index > 0 && isAddStepTarget) score += 500000;
+        if (index > 0 && isBelowLastCard) score += 750000;
+        if (index > 0 && isFirstStepTarget) score -= 1000000;
+
+        return {
+          element,
+          rect,
+          score,
+        };
+      })
+      .sort((left, right) => right.score - left.score || right.rect.top - left.rect.top || right.rect.left - left.rect.left)
+      .map((candidate) => candidate.element);
+  }
+
+  function clickSortedAddStepButtonByText(pattern, index) {
+    const candidates = Array.from(document.querySelectorAll("button, a, [role='button']"))
+      .filter((element) => !isElementDisabled(element) && pattern.test(normalizeText(element.textContent)));
+    const target = sortAddStepButtons(candidates, index)[0];
+    if (!target) {
+      return false;
+    }
+
+    clickElementRobust(target);
+    return true;
+  }
+
   function candidateAddStepButtons() {
     const candidates = [];
 
@@ -1098,15 +1298,7 @@
   }
 
   async function openStepEditor(index) {
-    const candidates = index === 0
-      ? candidateAddStepButtons().sort((left, right) => {
-          const leftText = normalizeText(left.textContent).toLowerCase();
-          const rightText = normalizeText(right.textContent).toLowerCase();
-          const leftScore = /inserisci il tuo primo passaggio|inserisci il primo passaggio|first step/i.test(leftText) ? 1 : 0;
-          const rightScore = /inserisci il tuo primo passaggio|inserisci il primo passaggio|first step/i.test(rightText) ? 1 : 0;
-          return rightScore - leftScore;
-        })
-      : candidateAddStepButtons();
+    const candidates = sortAddStepButtons(candidateAddStepButtons(), index);
     for (const candidate of candidates) {
       clickElementRobust(candidate);
       await sleep(700);
@@ -1121,7 +1313,7 @@
       return Boolean(await waitForField(stepEditorFieldConfig(), 2500));
     }
 
-    if (index > 0 && clickByText(/aggiungi step|aggiungi fase|add step|new step/i)) {
+    if (index > 0 && clickSortedAddStepButtonByText(/aggiungi step|aggiungi fase|add step|new step/i, index)) {
       await sleep(700);
       return Boolean(await waitForField(stepEditorFieldConfig(), 2500));
     }
