@@ -8,6 +8,7 @@
 // @match        https://*.monsieur-cuisine.com/*
 // @grant        GM_addStyle
 // @grant        GM_xmlhttpRequest
+// @connect      *
 // @connect      127.0.0.1
 // @connect      localhost
 // ==/UserScript==
@@ -15,7 +16,10 @@
 (function () {
   "use strict";
 
-  const APP_BASE_URL = "http://127.0.0.1:8000";
+  const CONFIGURED_APP_BASE_URL = "__APP_BASE_URL__";
+  const APP_BASE_URL = CONFIGURED_APP_BASE_URL === "__APP_BASE_URL__"
+    ? "http://127.0.0.1:8000"
+    : CONFIGURED_APP_BASE_URL;
   const TARGET_URL = "https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart";
   const SCALE_PROGRAM_LABEL = "Bilancia";
   const CUSTOM_COOKING_PROGRAM_LABEL = "Cottura personalizzata";

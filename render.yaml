@@ -2,6 +2,20 @@ services:
   - type: web
     name: monsieurapp
     runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: starter
-    autoDeploy: true
+    numInstances: 1
+    autoDeployTrigger: commit
     healthCheckPath: /health
+    envVars:
+      - key: APP_DATA_DIR
+        value: /app/persisted-data
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_MODEL
+        sync: false
+    disk:
+      name: app-data
+      mountPath: /app/persisted-data
+      sizeGB: 1

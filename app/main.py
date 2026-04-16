@@ -3,13 +3,15 @@ import html
 import logging
 import math
 import json
+import os
 import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -29,6 +31,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 TAMPERMONKEY_SCRIPT_PATH = BASE_DIR / "scripts" / "tampermonkey" / "monsieur-cuisine-bridge.user.js"
+LOCAL_APP_BASE_URL = "http://127.0.0.1:8000"
+TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER = "__APP_BASE_URL__"
 
 load_dotenv(BASE_DIR / ".env.local")
 load_dotenv()
@@ -38,6 +42,32 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("monsieur_app.web")
+
+
+def first_forwarded_header_value(value: str | None) -> str | None:
+    if not value:
+        return None
+    first_value = value.split(",", 1)[0].strip()
+    return first_value or None
+
+
+def build_public_base_url(request: Request) -> str:
+    configured_base_url = os.getenv("PUBLIC_APP_BASE_URL", "").strip()
+    if configured_base_url:
+        return configured_base_url.rstrip("/")
+
+    forwarded_host = first_forwarded_header_value(request.headers.get("x-forwarded-host"))
+    if forwarded_host:
+        forwarded_proto = first_forwarded_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme or "https"
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    return str(request.base_url).rstrip("/")
+
+
+def render_tampermonkey_script(request: Request) -> str:
+    base_url = build_public_base_url(request)
+    script_content = TAMPERMONKEY_SCRIPT_PATH.read_text(encoding="utf-8")
+    return script_content.replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 1)
 
 app = FastAPI(title="MonsieurAPP")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -834,14 +864,17 @@ async def home(request: Request) -> HTMLResponse:
 
 
 @app.get("/downloads/tampermonkey-script")
-async def download_tampermonkey_script() -> FileResponse:
+async def download_tampermonkey_script(request: Request) -> Response:
     if not TAMPERMONKEY_SCRIPT_PATH.exists():
         raise HTTPException(status_code=404, detail="Script Tampermonkey non trovato")
 
-    return FileResponse(
-        path=TAMPERMONKEY_SCRIPT_PATH,
-        filename="monsieur-cuisine-bridge.user.js",
+    return Response(
+        content=render_tampermonkey_script(request),
         media_type="application/javascript",
+        headers={
+            "Content-Disposition": 'attachment; filename="monsieur-cuisine-bridge.user.js"',
+            "Cache-Control": "no-store",
+        },
     )
 
 

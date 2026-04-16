@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
-PROMPT_TEMPLATE_PATH = APP_DIR / "data" / "adaptation_prompt_template.txt"
+DATA_DIR = Path(os.getenv("APP_DATA_DIR", APP_DIR / "data"))
+PROMPT_TEMPLATE_PATH = DATA_DIR / "adaptation_prompt_template.txt"
 
 
 DEFAULT_ADAPTATION_PROMPT_TEMPLATE = """Il Super-Prompt: MC Flow Architect

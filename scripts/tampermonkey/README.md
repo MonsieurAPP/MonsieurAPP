@@ -25,7 +25,7 @@ Userscript Tampermonkey per il flusso app-to-browser:
 ## Limiti attuali
 
 - E' un prototipo e dipende dal DOM reale di Monsieur Cuisine.
-- MonsieurAPP deve essere in esecuzione in locale su `http://127.0.0.1:8000`.
+- Se scarichi lo script dalla pagina della app, il file viene configurato automaticamente per quell'istanza; il sorgente nel repository continua invece a puntare in fallback a `http://127.0.0.1:8000`.
 - Non preme `Salva` in automatico.
 - Il recupero del job finale passa dalla nostra app; se non esiste una ricetta confermata o la app non risponde, lo script non puo' compilare il form.
 - Se Monsieur Cuisine richiede click o campi diversi da quelli previsti, bisognera' ritoccare i selettori.
