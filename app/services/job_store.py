@@ -68,6 +68,7 @@ class InMemoryJobStore:
         self,
         job_id: str,
         *,
+        desired_servings: Optional[int] = None,
         status: Optional[str] = None,
         message: Optional[str] = None,
         selected_review_mode: Optional[str] = None,
@@ -95,6 +96,8 @@ class InMemoryJobStore:
             job = self._jobs.get(job_id)
             if not job:
                 return None
+            if desired_servings is not None:
+                job.desired_servings = desired_servings
             if status is not None:
                 job.status = status
             if message is not None:

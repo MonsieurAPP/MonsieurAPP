@@ -7,13 +7,30 @@
   </div>
   <h1 class="title">Estrai ricette e preparale per Monsieur Cuisine</h1>
   <p class="subtitle">
-    Incolla un URL GialloZafferano o Cookidoo e ottieni una scheda guidata per compilare piu' velocemente il form ricetta di Monsieur Cuisine.
+    Scegli se partire da una ricetta pubblicata sul web oppure da una generazione AI guidata, mantenendo in uscita lo stesso payload compatibile con Tampermonkey.
   </p>
 </section>
 
 {% include "partials/service_tools.html" %}
 
-<section class="panel">
+<section class="panel-soft home-flow-switcher">
+  <div class="section-title">Percorso</div>
+  <div class="toggle-group home-flow-toggle" role="tablist" aria-label="Scegli il percorso iniziale">
+    <button type="button" class="button button-secondary{% if selected_home_flow == 'web' %} button-active{% endif %}" data-home-flow-button="web" aria-pressed="{{ 'true' if selected_home_flow == 'web' else 'false' }}">
+      Import ricette dal web
+    </button>
+    <button type="button" class="button button-secondary{% if selected_home_flow == 'ai' %} button-active{% endif %}" data-home-flow-button="ai" aria-pressed="{{ 'true' if selected_home_flow == 'ai' else 'false' }}">
+      Generazione ricette AI
+    </button>
+  </div>
+  {% if not selected_home_flow %}
+    <div class="job-text" style="margin-top: 0;">
+      Seleziona uno dei due percorsi per visualizzare la relativa scheda operativa.
+    </div>
+  {% endif %}
+</section>
+
+<section class="panel home-flow-panel{% if selected_home_flow == 'web' %} home-flow-panel-active{% endif %}" data-home-flow-panel="web"{% if selected_home_flow != 'web' %} hidden aria-hidden="true" style="display: none;"{% else %} aria-hidden="false"{% endif %}>
   <div class="job-text" style="margin-bottom: 18px;">
     Supporta GialloZafferano e Cookidoo. L'app estrae titolo, ingredienti e step, prova a dividere ogni ingrediente in quantita', unita', nome e note e puo' adattare le dosi a un numero specifico di persone.
   </div>
@@ -38,13 +55,52 @@
   </form>
 </section>
 
-<section class="panel stack">
+<section class="panel stack home-flow-panel{% if selected_home_flow == 'ai' %} home-flow-panel-active{% endif %}" data-home-flow-panel="ai"{% if selected_home_flow != 'ai' %} hidden aria-hidden="true" style="display: none;"{% else %} aria-hidden="false"{% endif %}>
   <div>
-    <div class="section-title">Payload pronto</div>
-    <div class="title" style="font-size: 1.4rem; margin-top: 10px;">Incolla un payload gia' strutturato</div>
+    <div class="section-title">Generazione e payload</div>
+    <div class="title" style="font-size: 1.4rem; margin-top: 10px;">Genera o incolla un payload pronto</div>
     <div class="job-text" style="margin-top: 10px;">
-      Se hai gia' un JSON nel formato usato dal bridge, puoi caricarlo qui: l'app crea subito un job confermato e Tampermonkey lo leggerà dagli stessi endpoint locali gia' esistenti.
+      In questo percorso puoi partire da una descrizione libera per farti generare il payload con la AI oppure incollare direttamente un JSON gia' strutturato nel formato del bridge.
     </div>
+  </div>
+
+  <div class="panel-soft stack">
+    <div>
+      <div class="label">Descrizione breve</div>
+      <div class="job-text" style="margin-top: 6px;">
+        Descrivi la ricetta in poche righe, poi indica separatamente le porzioni se vuoi che il payload nasca gia' tarato sul numero giusto di persone.
+      </div>
+    </div>
+
+    {% if payload_generation_error %}
+      <div class="alert alert-danger">{{ payload_generation_error }}</div>
+    {% endif %}
+
+    <form action="/imports/payload/generate" method="post" class="stack">
+      <div class="field">
+        <label for="recipe_description" class="label">Descrizione ricetta</label>
+        <textarea
+          id="recipe_description"
+          name="recipe_description"
+          required
+          class="input"
+          rows="5"
+          placeholder="Es. Minestrone di verdure con patate, zucchine, carote e fagioli. Vorrei un flusso pronto per Monsieur Cuisine."
+        >{{ payload_description_value }}</textarea>
+      </div>
+
+      <div class="field">
+        <label for="payload_generation_desired_servings" class="label">Per quante persone?</label>
+        <input id="payload_generation_desired_servings" name="desired_servings" type="number" min="1" step="1" inputmode="numeric" placeholder="Es. 2" value="{{ payload_description_servings_value }}" class="input" />
+        <div class="job-text" style="margin-top: 0;">
+          Questo valore viene passato separatamente alla AI e forzato nel payload finale se presente.
+        </div>
+      </div>
+
+      <button type="submit" class="button">
+        Genera payload con AI
+      </button>
+    </form>
   </div>
 
   {% if payload_import_error %}
@@ -87,6 +143,35 @@
     </button>
   </form>
 </section>
+
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    const buttons = Array.from(document.querySelectorAll("[data-home-flow-button]"));
+    const panels = Array.from(document.querySelectorAll("[data-home-flow-panel]"));
+
+    function setHomeFlow(flow) {
+      buttons.forEach((button) => {
+        const isActive = button.dataset.homeFlowButton === flow;
+        button.classList.toggle("button-active", isActive);
+        button.setAttribute("aria-pressed", isActive ? "true" : "false");
+      });
+
+      panels.forEach((panel) => {
+        const isActive = panel.dataset.homeFlowPanel === flow;
+        panel.hidden = !isActive;
+        panel.style.display = isActive ? "" : "none";
+        panel.setAttribute("aria-hidden", isActive ? "false" : "true");
+        panel.classList.toggle("home-flow-panel-active", isActive);
+      });
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => setHomeFlow(button.dataset.homeFlowButton));
+    });
+
+    setHomeFlow({{ selected_home_flow|tojson }} || null);
+  });
+</script>
 
 <section class="list">
   <div class="section-header">

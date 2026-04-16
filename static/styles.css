@@ -122,6 +122,33 @@ textarea {
   color: var(--subtle);
 }
 
+.home-flow-switcher {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.home-flow-toggle {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.home-flow-toggle .button {
+  width: 100%;
+}
+
+.home-flow-panel {
+  display: none;
+}
+
+.home-flow-panel.home-flow-panel-active {
+  display: grid;
+}
+
+.home-flow-panel[hidden] {
+  display: none !important;
+}
+
 .stack {
   display: grid;
   gap: 16px;

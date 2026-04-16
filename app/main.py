@@ -1,3 +1,4 @@
+import asyncio
 import ast
 import html
 import logging
@@ -23,7 +24,13 @@ from app.services.adaptation_prompt_store import (
     load_adaptation_prompt_template,
     save_adaptation_prompt_template,
 )
-from app.services.recipe_adaptation import build_recipe_adaptation, extract_json_payload
+from app.services.payload_generation import PayloadGenerationError, generate_payload_from_description
+from app.services.recipe_adaptation import (
+    build_recipe_adaptation,
+    extract_json_payload,
+    get_ai_settings,
+    is_live_ai_configured,
+)
 from app.services.recipe_service import RecipeExtractionError, extract_recipe
 
 
@@ -192,7 +199,15 @@ async def render_home(
     *,
     payload_import_error: str | None = None,
     payload_import_value: str = "",
+    payload_generation_error: str | None = None,
+    payload_description_value: str = "",
+    payload_description_servings_value: str = "",
 ) -> HTMLResponse:
+    requested_flow = str(request.query_params.get("flow") or "").strip().lower()
+    selected_home_flow = requested_flow if requested_flow in {"web", "ai"} else ""
+    if payload_import_error or payload_generation_error:
+        selected_home_flow = "ai"
+
     jobs = await job_store.list_recent()
     return templates.TemplateResponse(
         request,
@@ -202,8 +217,12 @@ async def render_home(
             "default_desired_servings": request.query_params.get("desired_servings", ""),
             "payload_import_error": payload_import_error,
             "payload_import_value": payload_import_value,
+            "payload_generation_error": payload_generation_error,
+            "payload_description_value": payload_description_value,
+            "payload_description_servings_value": payload_description_servings_value,
+            "selected_home_flow": selected_home_flow,
         },
-        status_code=400 if payload_import_error else 200,
+        status_code=400 if payload_import_error or payload_generation_error else 200,
     )
 
 
@@ -806,6 +825,136 @@ def has_live_ai_adaptation(job) -> bool:
     return bool(job and job.adaptation and job.adaptation.mode == "ai-live")
 
 
+def build_ai_unavailable_error(adaptation) -> str:
+    if not adaptation:
+        return "L'adattamento AI non e' disponibile."
+
+    warnings = getattr(adaptation, "warnings", None) or []
+    for warning in warnings:
+        normalized_warning = str(warning).strip()
+        if normalized_warning.startswith("Chiamata AI non riuscita:"):
+            return normalized_warning.replace(" Uso il fallback deterministico.", "")
+        if normalized_warning.startswith("Provider AI non configurato:"):
+            return normalized_warning
+
+    return "L'adattamento AI non e' disponibile. Configura il provider AI o risolvi l'errore della chiamata prima di continuare."
+
+
+def summarize_payload_generation_request(recipe_description: str, desired_servings: int | None = None) -> str:
+    normalized_description = re.sub(r"\s+", " ", recipe_description).strip()
+    if len(normalized_description) > 96:
+        normalized_description = normalized_description[:93].rstrip() + "..."
+    prefix = f"Descrizione AI ({desired_servings} persone):" if desired_servings else "Descrizione AI:"
+    return f"{prefix} {normalized_description}"
+
+
+def apply_generated_payload_servings(
+    normalized_payload: dict[str, object],
+    recipe: RecipeData,
+    desired_servings: int | None,
+) -> tuple[dict[str, object], RecipeData, int | None, float | None]:
+    if not desired_servings:
+        source_servings = parse_optional_int(normalized_payload.get("sourceServings"), minimum=1)
+        scaling_factor = compute_scaling_factor(desired_servings, source_servings)
+        return normalized_payload, recipe, source_servings, scaling_factor
+
+    enforced_yield_text = f"{desired_servings} persone"
+    normalized_payload["desiredServings"] = desired_servings
+    normalized_payload["sourceServings"] = desired_servings
+    normalized_payload["yieldText"] = enforced_yield_text
+    normalized_payload["sourceYieldText"] = enforced_yield_text
+    recipe.yield_text = enforced_yield_text
+    return normalized_payload, recipe, desired_servings, None
+
+
+async def finalize_manual_payload_job(
+    job_id: str,
+    *,
+    normalized_payload: dict[str, object],
+    recipe: RecipeData,
+    desired_servings: int | None,
+    source_servings: int | None,
+    scaling_factor: float | None,
+    success_message: str,
+) -> None:
+    confirmed_at = datetime.now(timezone.utc)
+    finalized_payload = dict(normalized_payload)
+    finalized_payload["jobId"] = job_id
+    finalized_payload["confirmedAt"] = confirmed_at.isoformat()
+    finalized_payload_json = json.dumps(finalized_payload, ensure_ascii=False, indent=2)
+
+    await job_store.update(
+        job_id,
+        desired_servings=desired_servings,
+        status="completed",
+        message=success_message,
+        selected_review_mode="manual",
+        confirmed_at=confirmed_at,
+        source_servings=source_servings,
+        scaling_factor=scaling_factor,
+        recipe_data=recipe,
+        recipe_json=recipe.to_json(),
+        manual_export_payload=finalized_payload,
+        manual_export_payload_json=finalized_payload_json,
+        ingredients_text=build_ingredients_text(recipe),
+        ingredients_guide_text=build_ingredients_guide_text(recipe),
+        steps_text=build_steps_text(recipe),
+        mc_steps_text=build_mc_steps_text(recipe),
+    )
+
+
+async def run_generate_payload_job(job_id: str, recipe_description: str, requested_desired_servings: int | None = None) -> None:
+    await job_store.update(job_id, status="adapting", message="Generazione payload AI in corso")
+    try:
+        generated_payload = await generate_payload_from_description(
+            recipe_description,
+            desired_servings=requested_desired_servings,
+        )
+        payload_json = json.dumps(generated_payload, ensure_ascii=False, indent=2)
+        normalized_payload, recipe, normalized_desired_servings, source_servings, scaling_factor = normalize_manual_export_payload(payload_json)
+        normalized_payload, recipe, source_servings, scaling_factor = apply_generated_payload_servings(
+            normalized_payload,
+            recipe,
+            requested_desired_servings,
+        )
+        final_desired_servings = requested_desired_servings or normalized_desired_servings
+        await finalize_manual_payload_job(
+            job_id,
+            normalized_payload=normalized_payload,
+            recipe=recipe,
+            desired_servings=final_desired_servings,
+            source_servings=source_servings,
+            scaling_factor=scaling_factor,
+            success_message="Payload AI confermato e pronto per Tampermonkey su Monsieur Cuisine",
+        )
+    except PayloadGenerationError as exc:
+        LOGGER.warning("Generazione payload AI fallita per il job %s: %s", job_id, exc)
+        await job_store.update(
+            job_id,
+            status="failed",
+            message="Generazione payload AI fallita",
+            error=str(exc),
+        )
+    except ValueError as exc:
+        LOGGER.exception("Payload AI non valido nel job %s", job_id)
+        await job_store.update(
+            job_id,
+            status="failed",
+            message="Generazione payload AI fallita",
+            error=f"Il payload generato dalla AI non e' valido: {exc}",
+            debug_traceback=traceback.format_exc(),
+        )
+    except Exception as exc:  # pragma: no cover
+        LOGGER.exception("Errore inatteso nel job AI %s", job_id)
+        await job_store.update(
+            job_id,
+            status="failed",
+            message="Errore inatteso nella generazione payload AI",
+            error=str(exc) or repr(exc),
+            debug_traceback=traceback.format_exc(),
+        )
+
+
 async def run_extract_job(job_id: str, recipe_url: str, desired_servings: int | None = None) -> None:
     await job_store.update(job_id, status="extracting", message="Estrazione ricetta in corso")
     try:
@@ -839,7 +988,7 @@ async def run_extract_job(job_id: str, recipe_url: str, desired_servings: int | 
                 steps_text=build_steps_text(recipe),
                 mc_steps_text=build_mc_steps_text(recipe),
                 adapted_steps_text=build_adapted_steps_text(adaptation),
-                error="L'adattamento AI non e' disponibile. Configura il provider AI o risolvi l'errore della chiamata prima di continuare.",
+                error=build_ai_unavailable_error(adaptation),
             )
             return
         final_status = "awaiting_review"
@@ -912,8 +1061,30 @@ async def create_import(
     desired_servings: int | None = Form(default=None),
 ) -> HTMLResponse:
     job = await job_store.create(recipe_url, desired_servings=desired_servings)
-    import asyncio
     asyncio.create_task(run_extract_job(job.id, recipe_url, desired_servings))
+    return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
+
+
+@app.post("/imports/payload/generate", response_class=HTMLResponse)
+async def create_import_from_description(
+    request: Request,
+    recipe_description: str = Form(...),
+    desired_servings: int | None = Form(default=None),
+) -> HTMLResponse:
+    normalized_description = re.sub(r"\s+", " ", recipe_description).strip()
+    if not normalized_description:
+        return await render_home(
+            request,
+            payload_generation_error="Descrivi brevemente la ricetta prima di inviare la richiesta.",
+            payload_description_value=recipe_description,
+            payload_description_servings_value=str(desired_servings or ""),
+        )
+
+    job = await job_store.create(
+        summarize_payload_generation_request(normalized_description, desired_servings=desired_servings),
+        desired_servings=desired_servings,
+    )
+    asyncio.create_task(run_generate_payload_job(job.id, normalized_description, desired_servings))
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
 
 
@@ -929,30 +1100,19 @@ async def create_import_from_payload(
             request,
             payload_import_error=str(exc),
             payload_import_value=payload_json,
+            payload_description_value="",
+            payload_description_servings_value="",
         )
 
     job = await job_store.create("Payload manuale incollato", desired_servings=desired_servings)
-    confirmed_at = datetime.now(timezone.utc)
-    normalized_payload["jobId"] = job.id
-    normalized_payload["confirmedAt"] = confirmed_at.isoformat()
-    normalized_payload_json = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
-
-    await job_store.update(
+    await finalize_manual_payload_job(
         job.id,
-        status="completed",
-        message="Payload manuale confermato e pronto per Tampermonkey su Monsieur Cuisine",
-        selected_review_mode="manual",
-        confirmed_at=confirmed_at,
+        normalized_payload=normalized_payload,
+        recipe=recipe,
+        desired_servings=desired_servings,
         source_servings=source_servings,
         scaling_factor=scaling_factor,
-        recipe_data=recipe,
-        recipe_json=recipe.to_json(),
-        manual_export_payload=normalized_payload,
-        manual_export_payload_json=normalized_payload_json,
-        ingredients_text=build_ingredients_text(recipe),
-        ingredients_guide_text=build_ingredients_guide_text(recipe),
-        steps_text=build_steps_text(recipe),
-        mc_steps_text=build_mc_steps_text(recipe),
+        success_message="Payload manuale confermato e pronto per Tampermonkey su Monsieur Cuisine",
     )
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
 
@@ -964,7 +1124,6 @@ async def create_import_api(
     desired_servings: int | None = Form(default=None),
 ) -> dict[str, object]:
     job = await job_store.create(recipe_url, desired_servings=desired_servings)
-    import asyncio
     asyncio.create_task(run_extract_job(job.id, recipe_url, desired_servings))
     return {
         "jobId": job.id,
@@ -1106,5 +1265,15 @@ async def job_status_partial(request: Request, job_id: str) -> HTMLResponse:
 
 
 @app.get("/health")
-async def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+async def healthcheck() -> dict[str, object]:
+    ai_settings = get_ai_settings()
+    default_base_url = "https://api.openai.com/v1"
+    configured_base_url = str(ai_settings["base_url"]).rstrip("/")
+    return {
+        "status": "ok",
+        "ai_enabled": bool(ai_settings["enabled"]),
+        "ai_configured": is_live_ai_configured(),
+        "ai_has_api_key": bool(ai_settings["api_key"]),
+        "ai_has_model": bool(ai_settings["model"]),
+        "ai_uses_custom_base_url": configured_base_url != default_base_url,
+    }
