@@ -31,4 +31,5 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 
 - La cronologia job e l'ultima ricetta confermata sono in memoria: si azzerano a ogni restart o nuovo deploy.
 - Lo userscript Tampermonkey va riscaricato dalla pagina della app deployata, cosi' viene configurato per il dominio Render corrente.
+- Se nel pannello Tampermonkey compare ancora un riferimento a `127.0.0.1` o a un vecchio host, significa che nel browser e' rimasta una versione precedente dello script: riscaricalo dalla pagina deployata e reinstallalo sopra la versione gia' presente.
 - Le cartelle locali di sviluppo come `playwright_state`, `debug` e i file `.env*` sono escluse dal build context Docker.

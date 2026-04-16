@@ -7,7 +7,7 @@ Userscript Tampermonkey per il flusso app-to-browser:
 3. Clicca `Conferma ricetta pronta`.
 4. Dalla pagina job clicca `Apri con Tampermonkey`, oppure vai direttamente su Monsieur Cuisine.
 5. Nella pagina Monsieur Cuisine compare un pannello con il bottone `Leggi ricetta confermata`.
-6. Lo script recupera dalla app locale il payload del job confermato indicato nell'hash `#mc-import=...`; se manca, usa l'ultima ricetta confermata disponibile.
+6. Lo script recupera dall'istanza di MonsieurAPP con cui e' stato configurato il payload del job confermato indicato nell'hash `#mc-import=...`; se manca, usa l'ultima ricetta confermata disponibile.
 7. Lo script prova a compilare titolo, porzioni, tempo totale, ingredienti e tutti i passaggi esportati; quelli non macchina vengono inseriti come step descrittivi con solo titolo e descrizione, gli step `Bilancia` restano singoli con descrizione nello stesso passaggio e, se il payload contiene `targetedWeight`, lo script tenta di compilare anche il campo `Peso`, mentre gli step `Cottura personalizzata` vengono sdoppiati in uno step descrittivo e uno step tecnico con lo stesso titolo.
 8. Controlla il risultato e premi `Salva` manualmente.
 
@@ -27,5 +27,5 @@ Userscript Tampermonkey per il flusso app-to-browser:
 - E' un prototipo e dipende dal DOM reale di Monsieur Cuisine.
 - Se scarichi lo script dalla pagina della app, il file viene configurato automaticamente per quell'istanza; il sorgente nel repository continua invece a puntare in fallback a `http://127.0.0.1:8000`.
 - Non preme `Salva` in automatico.
-- Il recupero del job finale passa dalla nostra app; se non esiste una ricetta confermata o la app non risponde, lo script non puo' compilare il form.
+- Il recupero del job finale passa dalla nostra app; se non esiste una ricetta confermata o l'istanza configurata non risponde, lo script non puo' compilare il form.
 - Se Monsieur Cuisine richiede click o campi diversi da quelli previsti, bisognera' ritoccare i selettori.

@@ -51,17 +51,45 @@ def first_forwarded_header_value(value: str | None) -> str | None:
     return first_value or None
 
 
+def strip_host_port(host: str | None) -> str:
+    if not host:
+        return ""
+    if host.startswith("["):
+        closing_bracket_index = host.find("]")
+        if closing_bracket_index != -1:
+            return host[1:closing_bracket_index]
+    hostname, separator, _ = host.partition(":")
+    return hostname if separator else host
+
+
+def is_local_hostname(host: str | None) -> bool:
+    normalized_host = strip_host_port(host).strip().lower()
+    return normalized_host in {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+
 def build_public_base_url(request: Request) -> str:
     configured_base_url = os.getenv("PUBLIC_APP_BASE_URL", "").strip()
     if configured_base_url:
         return configured_base_url.rstrip("/")
 
+    render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+    if render_external_url:
+        return render_external_url.rstrip("/")
+
     forwarded_host = first_forwarded_header_value(request.headers.get("x-forwarded-host"))
     if forwarded_host:
-        forwarded_proto = first_forwarded_header_value(request.headers.get("x-forwarded-proto")) or request.url.scheme or "https"
+        forwarded_proto = first_forwarded_header_value(request.headers.get("x-forwarded-proto"))
+        if not forwarded_proto:
+            forwarded_proto = "http" if is_local_hostname(forwarded_host) else "https"
+        elif forwarded_proto == "http" and not is_local_hostname(forwarded_host):
+            forwarded_proto = "https"
         return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
 
-    return str(request.base_url).rstrip("/")
+    fallback_base_url = str(request.base_url).rstrip("/")
+    request_hostname = request.url.hostname or ""
+    if request.url.scheme == "http" and not is_local_hostname(request_hostname):
+        return fallback_base_url.replace("http://", "https://", 1)
+    return fallback_base_url
 
 
 def render_tampermonkey_script(request: Request) -> str:

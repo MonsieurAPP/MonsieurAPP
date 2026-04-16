@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.12.0
+// @version      0.2.12.1
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -119,7 +119,7 @@
             reject(new Error(`Risposta API non valida: ${error.message}`));
           }
         },
-        onerror: () => reject(new Error("Impossibile raggiungere MonsieurAPP in locale.")),
+        onerror: () => reject(new Error(`Impossibile raggiungere MonsieurAPP su ${APP_BASE_URL}.`)),
       });
     });
   }
@@ -784,7 +784,7 @@
       onPrimary: onRetry,
       secondaryLabel: "Chiudi",
       onSecondary: onDismiss,
-      note: "Se apri Monsieur Cuisine dalla review page confermata, lo script usa direttamente il job indicato nell'hash.",
+      note: `Istanza configurata nello script: ${escapeHtml(APP_BASE_URL)}. Se hai cambiato deploy o dominio, riscarica lo script da quella pagina e reinstallalo sopra la versione precedente.`,
     });
   }
 
