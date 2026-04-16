@@ -11,6 +11,8 @@
   </p>
 </section>
 
+{% include "partials/service_tools.html" %}
+
 <section class="panel">
   <div class="job-text" style="margin-bottom: 18px;">
     Supporta GialloZafferano e Cookidoo. L'app estrae titolo, ingredienti e step, prova a dividere ogni ingrediente in quantita', unita', nome e note e puo' adattare le dosi a un numero specifico di persone.
@@ -32,6 +34,56 @@
 
     <button type="submit" class="button">
       Estrai ricetta
+    </button>
+  </form>
+</section>
+
+<section class="panel stack">
+  <div>
+    <div class="section-title">Payload pronto</div>
+    <div class="title" style="font-size: 1.4rem; margin-top: 10px;">Incolla un payload gia' strutturato</div>
+    <div class="job-text" style="margin-top: 10px;">
+      Se hai gia' un JSON nel formato usato dal bridge, puoi caricarlo qui: l'app crea subito un job confermato e Tampermonkey lo leggerà dagli stessi endpoint locali gia' esistenti.
+    </div>
+  </div>
+
+  {% if payload_import_error %}
+    <div class="alert alert-danger">{{ payload_import_error }}</div>
+  {% endif %}
+
+  <form action="/imports/payload" method="post" class="stack">
+    <div class="field">
+      <label for="payload_json" class="label">Payload JSON</label>
+      <textarea
+        id="payload_json"
+        name="payload_json"
+        required
+        class="input prompt-textarea"
+        rows="16"
+        spellcheck="false"
+        autocapitalize="off"
+        autocomplete="off"
+        placeholder='{
+  "title": "Risotto ai funghi",
+  "ingredients": ["320 g riso Carnaroli"],
+  "operationalTimeline": [
+    {
+      "environment": "mc",
+      "description": "Pesa il riso nel boccale",
+      "program": "Bilancia",
+      "targetedWeight": 320,
+      "targetedWeightUnit": "g"
+    }
+  ]
+}'
+      >{{ payload_import_value }}</textarea>
+      <div class="job-text" style="margin-top: 0;">
+        Campi minimi consigliati: <strong>title</strong>, <strong>ingredients</strong> e almeno uno tra <strong>operationalTimeline</strong> oppure <strong>steps</strong>. Se il payload e' gia' completo, l'app mantiene anche gli altri campi utili al bridge. Puoi incollare anche un blocco copiato dalla chat con i delimitatori <strong>```json</strong>.
+      </div>
+    </div>
+
+    <button type="submit" class="button">
+      Carica payload pronto
     </button>
   </form>
 </section>

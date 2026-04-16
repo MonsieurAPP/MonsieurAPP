@@ -51,7 +51,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"')
   taskkill /PID %%P /F >nul 2>nul
 )
 
-set "RELOAD=1"
+set "RELOAD=0"
 set "PORT=%PORT%"
 set "HEADLESS=%HEADLESS%"
 

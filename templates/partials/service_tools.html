@@ -1,0 +1,30 @@
+<section class="panel stack service-tools">
+  <div class="row-between" style="align-items: center; gap: 14px;">
+    <div>
+      <div class="section-title">Strumenti</div>
+      <div class="title" style="font-size: 1.25rem; margin-top: 10px;">Script Tampermonkey</div>
+      <div class="job-text" style="margin-top: 10px;">
+        Scarica la versione aggiornata dello userscript da installare nel browser che usi per Monsieur Cuisine.
+      </div>
+    </div>
+    <a
+      href="/downloads/tampermonkey-script"
+      class="button button-secondary"
+      download
+      onclick="const help = this.closest('.service-tools')?.querySelector('details'); if (help) { help.open = true; }"
+    >
+      Scarica script
+    </a>
+  </div>
+
+  <details class="prompt-details">
+    <summary class="button button-secondary prompt-summary">Come si installa</summary>
+    <div class="prompt-box" style="margin-top: 12px;">
+      <div class="job-text" style="margin-top: 0;">1. Installa Tampermonkey nel browser che usi gia' per Monsieur Cuisine.</div>
+      <div class="job-text" style="margin-top: 8px;">2. Premi <strong>Scarica script</strong> da questa pagina e salva il file <strong>monsieur-cuisine-bridge.user.js</strong>.</div>
+      <div class="job-text" style="margin-top: 8px;">3. Apri Tampermonkey e importa il file scaricato, oppure crea un nuovo script e incolla il contenuto del file.</div>
+      <div class="job-text" style="margin-top: 8px;">4. Salva lo script e lascia attiva l'estensione: quando apri Monsieur Cuisine comparira' il pulsante flottante di MonsieurAPP.</div>
+      <div class="job-text" style="margin-top: 8px;">5. Dopo ogni aggiornamento dello script puoi riscaricarlo da qui e reinstallarlo sopra la versione precedente.</div>
+    </div>
+  </details>
+</section>

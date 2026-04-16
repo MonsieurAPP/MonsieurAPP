@@ -1,29 +1,34 @@
+import ast
+import html
 import logging
 import math
+import json
 import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
 
+from app.models import RecipeData, RecipeIngredient, RecipeStep
 from app.services.job_store import InMemoryJobStore
 from app.services.adaptation_prompt_store import (
     get_default_adaptation_prompt_template,
     load_adaptation_prompt_template,
     save_adaptation_prompt_template,
 )
-from app.services.recipe_adaptation import build_recipe_adaptation
+from app.services.recipe_adaptation import build_recipe_adaptation, extract_json_payload
 from app.services.recipe_service import RecipeExtractionError, extract_recipe
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+TAMPERMONKEY_SCRIPT_PATH = BASE_DIR / "scripts" / "tampermonkey" / "monsieur-cuisine-bridge.user.js"
 
 load_dotenv(BASE_DIR / ".env.local")
 load_dotenv()
@@ -57,6 +62,8 @@ def serialize_adapted_step(step) -> dict[str, object]:
         "durationSeconds": step.duration_seconds,
         "temperatureC": step.temperature_c,
         "speed": step.speed,
+        "targetedWeight": getattr(step, "targeted_weight", None),
+        "targetedWeightUnit": getattr(step, "targeted_weight_unit", None),
         "reverse": step.reverse,
         "confidence": step.confidence,
         "rationale": step.rationale,
@@ -122,10 +129,36 @@ def build_job_template_context(job, *, prompt_saved: bool = False, prompt_error:
     }
 
 
+async def render_home(
+    request: Request,
+    *,
+    payload_import_error: str | None = None,
+    payload_import_value: str = "",
+) -> HTMLResponse:
+    jobs = await job_store.list_recent()
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {
+            "jobs": jobs,
+            "default_desired_servings": request.query_params.get("desired_servings", ""),
+            "payload_import_error": payload_import_error,
+            "payload_import_value": payload_import_value,
+        },
+        status_code=400 if payload_import_error else 200,
+    )
+
+
 def format_step_minutes(duration_seconds: int | None) -> str:
     if duration_seconds is None:
         return "-"
     return str(max(1, round(duration_seconds / 60)))
+
+
+def format_targeted_weight_display(targeted_weight: int | None, targeted_weight_unit: str | None) -> str:
+    if targeted_weight is None:
+        return "-"
+    return f"{targeted_weight} {targeted_weight_unit or 'g'}"
 
 
 def build_ingredients_text(recipe) -> str:
@@ -196,6 +229,311 @@ def format_scaled_quantity(value: float) -> str:
     return text.replace(".", ",")
 
 
+def parse_optional_int(value: object, *, minimum: int | None = None) -> int | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+
+    parsed: int | None = None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, float):
+        if math.isfinite(value):
+            parsed = int(round(value))
+    elif isinstance(value, str):
+        normalized = value.strip().replace(",", ".")
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", normalized):
+            parsed = int(round(float(normalized)))
+
+    if parsed is None:
+        return None
+    if minimum is not None and parsed < minimum:
+        return None
+    return parsed
+
+
+def parse_optional_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "si", "sì"}
+    return False
+
+
+def coerce_string_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := str(item).strip())]
+
+
+def normalize_manual_environment(value: object) -> str:
+    environment = str(value or "").strip().lower()
+    if environment in STEP_ENVIRONMENT_LABELS:
+        return environment
+    return "mc"
+
+
+def normalize_manual_structured_ingredients(
+    value: object,
+) -> tuple[list[dict[str, object]], list[RecipeIngredient]]:
+    if not isinstance(value, list):
+        return [], []
+
+    exported_items: list[dict[str, object]] = []
+    preview_items: list[RecipeIngredient] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+
+        original_text = str(item.get("originalText") or item.get("finalText") or item.get("name") or "").strip()
+        final_text = str(item.get("finalText") or original_text).strip()
+        name = str(item.get("name") or final_text or original_text).strip()
+        quantity = str(item.get("quantity") or "").strip() or None
+        unit = str(item.get("unit") or "").strip() or None
+        notes = str(item.get("notes") or "").strip() or None
+        scaled_quantity = str(item.get("scaledQuantity") or "").strip() or None
+        final_quantity = str(item.get("finalQuantity") or item.get("quantity") or "").strip() or None
+
+        if not any([original_text, final_text, name]):
+            continue
+
+        exported_items.append(
+            {
+                "originalText": original_text or final_text or name,
+                "name": name or final_text or original_text,
+                "quantity": quantity,
+                "unit": unit,
+                "notes": notes,
+                "scaledQuantity": scaled_quantity,
+                "finalQuantity": final_quantity,
+                "finalText": final_text or original_text or name,
+            }
+        )
+        preview_items.append(
+            RecipeIngredient(
+                original_text=original_text or final_text or name,
+                name=name or final_text or original_text,
+                quantity=quantity,
+                unit=unit,
+                notes=notes,
+            )
+        )
+
+    return exported_items, preview_items
+
+
+def build_fallback_structured_ingredients(ingredients: list[str]) -> tuple[list[dict[str, object]], list[RecipeIngredient]]:
+    exported_items = []
+    preview_items = []
+    for ingredient in ingredients:
+        exported_items.append(
+            {
+                "originalText": ingredient,
+                "name": ingredient,
+                "quantity": None,
+                "unit": None,
+                "notes": None,
+                "scaledQuantity": None,
+                "finalQuantity": None,
+                "finalText": ingredient,
+            }
+        )
+        preview_items.append(RecipeIngredient(original_text=ingredient, name=ingredient))
+    return exported_items, preview_items
+
+
+def normalize_manual_payload_step(step: dict[str, object], index: int) -> dict[str, object]:
+    description = str(step.get("description") or step.get("detailedInstructions") or f"Passaggio {index + 1}").strip()
+    detailed_instructions = str(step.get("detailedInstructions") or description).strip() or description
+    targeted_weight = parse_optional_int(step.get("targetedWeight"), minimum=1)
+    targeted_weight_unit = None
+    if targeted_weight is not None:
+        targeted_weight_unit = str(step.get("targetedWeightUnit") or "g").strip() or "g"
+    source_refs = []
+    if isinstance(step.get("sourceRefs"), list):
+        source_refs = [ref for ref in (parse_optional_int(item, minimum=1) for item in step["sourceRefs"]) if ref is not None]
+
+    return {
+        "environment": normalize_manual_environment(step.get("environment")),
+        "description": description,
+        "program": str(step.get("program") or "").strip() or None,
+        "parametersSummary": str(step.get("parametersSummary") or "").strip() or None,
+        "accessory": str(step.get("accessory") or "").strip() or None,
+        "detailedInstructions": detailed_instructions,
+        "durationSeconds": parse_optional_int(step.get("durationSeconds"), minimum=0),
+        "temperatureC": parse_optional_int(step.get("temperatureC")),
+        "speed": str(step.get("speed") or "").strip() or None,
+        "targetedWeight": targeted_weight,
+        "targetedWeightUnit": targeted_weight_unit,
+        "reverse": parse_optional_bool(step.get("reverse")),
+        "confidence": str(step.get("confidence") or "").strip() or None,
+        "rationale": str(step.get("rationale") or "").strip() or None,
+        "sourceRefs": source_refs,
+    }
+
+
+def compute_scaling_factor(desired_servings: int | None, source_servings: int | None) -> float | None:
+    if not desired_servings or not source_servings or desired_servings <= 0 or source_servings <= 0:
+        return None
+    return desired_servings / source_servings
+
+
+def normalize_manual_export_payload(
+    raw_payload: str,
+) -> tuple[dict[str, object], RecipeData, int | None, int | None, float | None]:
+    translation_map = str.maketrans(
+        {
+            "\ufeff": "",
+            "\u200b": "",
+            "\u200c": "",
+            "\u200d": "",
+            "\u2060": "",
+            "\xa0": " ",
+            "\u201c": '"',
+            "\u201d": '"',
+            "\u2018": "'",
+            "\u2019": "'",
+        }
+    )
+    sanitized_payload = html.unescape(raw_payload).translate(translation_map).strip()
+    if not sanitized_payload:
+        raise ValueError("Incolla un payload JSON valido prima di inviarlo.")
+
+    def _parse_python_literal_candidate(candidate: str) -> dict[str, object] | None:
+        try:
+            parsed_literal = ast.literal_eval(candidate)
+        except (ValueError, SyntaxError):
+            return None
+        return parsed_literal if isinstance(parsed_literal, dict) else None
+
+    def _parse_javascript_object_candidate(candidate: str) -> dict[str, object] | None:
+        start_index = candidate.find("{")
+        end_index = candidate.rfind("}")
+        if start_index == -1 or end_index <= start_index:
+            return None
+
+        normalized_candidate = candidate[start_index : end_index + 1].strip().removesuffix(";")
+        normalized_candidate = re.sub(r",\s*([}\]])", r"\1", normalized_candidate)
+        normalized_candidate = re.sub(r"\bundefined\b", "null", normalized_candidate)
+        normalized_candidate = re.sub(
+            r'([{,]\s*)([A-Za-z_$][A-Za-z0-9_$]*)\s*:',
+            r'\1"\2":',
+            normalized_candidate,
+        )
+
+        try:
+            parsed_literal = json.loads(normalized_candidate)
+        except json.JSONDecodeError:
+            return None
+        return parsed_literal if isinstance(parsed_literal, dict) else None
+
+    try:
+        payload = extract_json_payload(sanitized_payload)
+    except Exception:
+        try:
+            payload = json.loads(sanitized_payload)
+        except json.JSONDecodeError as exc:
+            payload = _parse_python_literal_candidate(sanitized_payload)
+            if payload is None:
+                start_index = sanitized_payload.find("{")
+                end_index = sanitized_payload.rfind("}")
+                if start_index != -1 and end_index > start_index:
+                    payload = _parse_python_literal_candidate(sanitized_payload[start_index : end_index + 1])
+            if payload is None:
+                payload = _parse_javascript_object_candidate(sanitized_payload)
+
+            if payload is None:
+                LOGGER.warning(
+                    "Payload manuale non parsabile. Preview=%r",
+                    sanitized_payload[:160],
+                )
+                raise ValueError(f"Payload JSON non valido: {exc.msg} (riga {exc.lineno}, colonna {exc.colno}).") from exc
+
+    if not isinstance(payload, dict):
+        raise ValueError("Il payload deve essere un oggetto JSON.")
+
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        raise ValueError("Il payload deve contenere un titolo valorizzato nel campo 'title'.")
+
+    operational_timeline = payload.get("operationalTimeline") if isinstance(payload.get("operationalTimeline"), list) else []
+    raw_steps = operational_timeline or (payload.get("steps") if isinstance(payload.get("steps"), list) else [])
+    normalized_timeline = [
+        normalize_manual_payload_step(step, index)
+        for index, step in enumerate(raw_steps)
+        if isinstance(step, dict)
+    ]
+    if not normalized_timeline:
+        raise ValueError("Il payload deve contenere almeno uno step valido in 'operationalTimeline' oppure in 'steps'.")
+
+    ingredient_lines = coerce_string_list(payload.get("ingredients"))
+    structured_ingredients, structured_preview = normalize_manual_structured_ingredients(payload.get("structuredIngredients"))
+    if not ingredient_lines and structured_ingredients:
+        ingredient_lines = [str(item.get("finalText") or item.get("originalText") or item.get("name") or "").strip() for item in structured_ingredients]
+        ingredient_lines = [item for item in ingredient_lines if item]
+    if not structured_ingredients:
+        structured_ingredients, structured_preview = build_fallback_structured_ingredients(ingredient_lines)
+
+    source_url = str(payload.get("sourceUrl") or "payload://manual").strip() or "payload://manual"
+    source_site = str(payload.get("sourceSite") or "Payload manuale").strip() or "Payload manuale"
+    yield_text = str(payload.get("yieldText") or payload.get("sourceYieldText") or "").strip() or None
+    desired_servings = parse_optional_int(payload.get("desiredServings"), minimum=1)
+    source_servings = parse_optional_int(payload.get("sourceServings"), minimum=1)
+    if source_servings is None:
+        source_servings = parse_servings_count(str(payload.get("sourceYieldText") or payload.get("yieldText") or ""))
+    scaling_factor = compute_scaling_factor(desired_servings, source_servings)
+    total_time_minutes = parse_optional_int(payload.get("totalTimeMinutes"), minimum=1)
+
+    recipe = RecipeData(
+        source_url=source_url,
+        source_site=source_site,
+        title=title,
+        ingredients=ingredient_lines,
+        structured_ingredients=structured_preview,
+        steps=[
+            RecipeStep(
+                description=str(step["description"]),
+                duration_seconds=parse_optional_int(step.get("durationSeconds"), minimum=0),
+                temperature_c=parse_optional_int(step.get("temperatureC")),
+                speed=str(step.get("speed") or "").strip() or None,
+                targeted_weight=parse_optional_int(step.get("targetedWeight"), minimum=1),
+                targeted_weight_unit=str(step.get("targetedWeightUnit") or "").strip() or None,
+                reverse=parse_optional_bool(step.get("reverse")),
+                source_text=str(step.get("detailedInstructions") or step["description"]),
+            )
+            for step in normalized_timeline
+        ],
+        yield_text=yield_text,
+        total_time_minutes=total_time_minutes,
+    )
+
+    normalized_payload = dict(payload)
+    normalized_payload["title"] = title
+    normalized_payload["sourceUrl"] = source_url
+    normalized_payload["sourceSite"] = source_site
+    normalized_payload["ingredients"] = ingredient_lines
+    normalized_payload["structuredIngredients"] = structured_ingredients
+    normalized_payload["operationalTimeline"] = normalized_timeline
+    normalized_payload["steps"] = [step for step in normalized_timeline if step["environment"] == "mc"]
+    normalized_payload["manualSteps"] = [step for step in normalized_timeline if step["environment"] == "external"]
+    normalized_payload["transitionSteps"] = [step for step in normalized_timeline if step["environment"] == "transition"]
+    normalized_payload["yieldText"] = yield_text
+    normalized_payload["sourceYieldText"] = str(payload.get("sourceYieldText") or yield_text or "").strip() or None
+    normalized_payload["desiredServings"] = desired_servings
+    normalized_payload["sourceServings"] = source_servings
+    normalized_payload["totalTimeMinutes"] = total_time_minutes
+    normalized_payload["warnings"] = coerce_string_list(payload.get("warnings"))
+    normalized_payload["selectedReviewMode"] = str(payload.get("selectedReviewMode") or "manual").strip() or "manual"
+    normalized_payload["exportMode"] = str(payload.get("exportMode") or "manual").strip() or "manual"
+
+    return normalized_payload, recipe, desired_servings, source_servings, scaling_factor
+
+
+def is_manual_payload_job(job) -> bool:
+    return bool(job and getattr(job, "manual_export_payload", None))
+
+
 def build_scaled_ingredients(recipe, desired_servings: int | None) -> tuple[str | None, str | None, int | None, float | None]:
     source_servings = parse_servings_count(recipe.yield_text)
     if not desired_servings or not source_servings or desired_servings <= 0 or source_servings <= 0:
@@ -256,10 +594,19 @@ def build_scaled_ingredient_entry(ingredient, scaling_factor: float | None) -> d
 
 
 def build_export_payload(job, mode: str = "selected") -> dict[str, object]:
-    if not job.recipe_data:
-        raise HTTPException(status_code=409, detail="Ricetta non ancora disponibile")
     if job.confirmed_at is None:
         raise HTTPException(status_code=409, detail="Ricetta non ancora confermata")
+
+    if is_manual_payload_job(job):
+        payload = dict(job.manual_export_payload or {})
+        payload["jobId"] = job.id
+        payload["confirmedAt"] = job.confirmed_at.isoformat() if job.confirmed_at else None
+        payload.setdefault("sourceUrl", job.recipe_data.source_url if job.recipe_data else job.recipe_url)
+        payload.setdefault("sourceSite", job.recipe_data.source_site if job.recipe_data else "Payload manuale")
+        return payload
+
+    if not job.recipe_data:
+        raise HTTPException(status_code=409, detail="Ricetta non ancora disponibile")
 
     export_mode = "adapted" if mode == "selected" else mode
     if export_mode not in {"original", "adapted"}:
@@ -290,6 +637,8 @@ def build_export_payload(job, mode: str = "selected") -> dict[str, object]:
                 "durationSeconds": step.duration_seconds,
                 "temperatureC": step.temperature_c,
                 "speed": step.speed,
+                "targetedWeight": step.targeted_weight,
+                "targetedWeightUnit": step.targeted_weight_unit,
                 "reverse": step.reverse,
                 "confidence": None,
                 "rationale": None,
@@ -334,6 +683,7 @@ def build_steps_text(recipe) -> str:
                 [
                     f"Step {index}",
                     f"Descrizione: {step.description}",
+                    f"Peso target: {format_targeted_weight_display(step.targeted_weight, step.targeted_weight_unit)}",
                     f"Tempo: {format_step_minutes(step.duration_seconds)} min",
                     f"Temperatura: {step.temperature_c if step.temperature_c is not None else '-'} C",
                     f"Velocita: {step.speed if step.speed else '-'}",
@@ -351,6 +701,7 @@ def build_mc_steps_text(recipe) -> str:
             [
                 f"STEP {index}",
                 f"Titolo/Descrizione: {step.description}",
+                f"Peso target: {format_targeted_weight_display(step.targeted_weight, step.targeted_weight_unit)}",
                 f"Tempo (min): {format_step_minutes(step.duration_seconds)}",
                 f"Temperatura (C): {step.temperature_c if step.temperature_c is not None else '-'}",
                 f"Velocita: {step.speed if step.speed else '-'}",
@@ -372,6 +723,7 @@ def build_adapted_steps_text(adaptation) -> str:
                 f"Fase: {step.description}",
                 f"Programma: {step.program or '-'}",
                 f"Programma/Parametri: {step.parameters_summary or '-'}",
+                f"Peso target: {format_targeted_weight_display(step.targeted_weight, step.targeted_weight_unit)}",
                 f"Accessorio: {step.accessory or '-'}",
                 f"Istruzioni dettagliate: {step.detailed_instructions or step.description}",
                 f"Tempo (min): {format_step_minutes(step.duration_seconds)}",
@@ -478,14 +830,18 @@ async def run_extract_job(job_id: str, recipe_url: str, desired_servings: int | 
 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request) -> HTMLResponse:
-    jobs = await job_store.list_recent()
-    return templates.TemplateResponse(
-        request,
-        "index.html",
-        {
-            "jobs": jobs,
-            "default_desired_servings": request.query_params.get("desired_servings", ""),
-        },
+    return await render_home(request)
+
+
+@app.get("/downloads/tampermonkey-script")
+async def download_tampermonkey_script() -> FileResponse:
+    if not TAMPERMONKEY_SCRIPT_PATH.exists():
+        raise HTTPException(status_code=404, detail="Script Tampermonkey non trovato")
+
+    return FileResponse(
+        path=TAMPERMONKEY_SCRIPT_PATH,
+        filename="monsieur-cuisine-bridge.user.js",
+        media_type="application/javascript",
     )
 
 
@@ -497,6 +853,46 @@ async def create_import(
     job = await job_store.create(recipe_url, desired_servings=desired_servings)
     import asyncio
     asyncio.create_task(run_extract_job(job.id, recipe_url, desired_servings))
+    return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
+
+
+@app.post("/imports/payload", response_class=HTMLResponse)
+async def create_import_from_payload(
+    request: Request,
+    payload_json: str = Form(...),
+) -> HTMLResponse:
+    try:
+        normalized_payload, recipe, desired_servings, source_servings, scaling_factor = normalize_manual_export_payload(payload_json)
+    except ValueError as exc:
+        return await render_home(
+            request,
+            payload_import_error=str(exc),
+            payload_import_value=payload_json,
+        )
+
+    job = await job_store.create("Payload manuale incollato", desired_servings=desired_servings)
+    confirmed_at = datetime.now(timezone.utc)
+    normalized_payload["jobId"] = job.id
+    normalized_payload["confirmedAt"] = confirmed_at.isoformat()
+    normalized_payload_json = json.dumps(normalized_payload, ensure_ascii=False, indent=2)
+
+    await job_store.update(
+        job.id,
+        status="completed",
+        message="Payload manuale confermato e pronto per Tampermonkey su Monsieur Cuisine",
+        selected_review_mode="manual",
+        confirmed_at=confirmed_at,
+        source_servings=source_servings,
+        scaling_factor=scaling_factor,
+        recipe_data=recipe,
+        recipe_json=recipe.to_json(),
+        manual_export_payload=normalized_payload,
+        manual_export_payload_json=normalized_payload_json,
+        ingredients_text=build_ingredients_text(recipe),
+        ingredients_guide_text=build_ingredients_guide_text(recipe),
+        steps_text=build_steps_text(recipe),
+        mc_steps_text=build_mc_steps_text(recipe),
+    )
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
 
 
@@ -567,7 +963,7 @@ async def export_import_api(job_id: str, mode: str = "selected") -> dict[str, ob
         raise HTTPException(status_code=404, detail="Job non trovato")
     if job.status not in {"completed", "awaiting_review"}:
         raise HTTPException(status_code=409, detail="Job non ancora pronto per l'export")
-    if not has_live_ai_adaptation(job):
+    if not is_manual_payload_job(job) and not has_live_ai_adaptation(job):
         raise HTTPException(status_code=409, detail="Adattamento AI non disponibile: export bloccato")
     return build_export_payload(job, mode)
 

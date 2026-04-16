@@ -18,6 +18,8 @@ class RecipeStep:
     duration_seconds: Optional[int] = None
     temperature_c: Optional[int] = None
     speed: Optional[str] = None
+    targeted_weight: Optional[int] = None
+    targeted_weight_unit: Optional[str] = None
     reverse: bool = False
     source_speed: Optional[str] = None
     source_text: Optional[str] = None
@@ -34,6 +36,8 @@ class RecipeAdaptedStep:
     duration_seconds: Optional[int] = None
     temperature_c: Optional[int] = None
     speed: Optional[str] = None
+    targeted_weight: Optional[int] = None
+    targeted_weight_unit: Optional[str] = None
     reverse: bool = False
     confidence: str = "low"
     rationale: Optional[str] = None

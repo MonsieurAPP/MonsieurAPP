@@ -17,7 +17,7 @@ from app.services.adaptation_prompt_store import load_adaptation_prompt_template
 
 
 LOGGER = logging.getLogger("monsieur_app.adaptation")
-PROMPT_VERSION = "mc-adaptation-v4"
+PROMPT_VERSION = "mc-adaptation-v5"
 
 
 AMBIGUITY_TOKENS = (
@@ -135,6 +135,42 @@ MC_STEP_HINT_TOKENS = (
     "mescolare",
 )
 
+WEIGHING_ACTION_TOKENS = (
+    "aggiung",
+    "unisc",
+    "versa",
+    "metti",
+    "mett",
+    "inser",
+    "incorp",
+    "dosa",
+    "dose",
+    "pesa",
+    "pesare",
+    "nel boccale",
+)
+
+NON_SCALE_TECHNICAL_TOKENS = (
+    "cuoc",
+    "cott",
+    "rosol",
+    "soffrig",
+    "frull",
+    "mescol",
+    "impast",
+    "trit",
+    "tagli",
+    "boll",
+    "vapore",
+    "ferment",
+    "turbo",
+    "sous-vide",
+    "sous vide",
+    "prelav",
+    "riso",
+    "uova",
+)
+
 
 class AdaptationError(Exception):
     """Raised when the live AI adaptation cannot be parsed or validated."""
@@ -161,12 +197,56 @@ def is_live_ai_configured() -> bool:
     return bool(settings["enabled"] and settings["api_key"] and settings["model"])
 
 
+def normalize_targeted_weight_unit(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"g", "gr", "grammo", "grammi"}:
+        return "g"
+    if normalized == "kg":
+        return "kg"
+    return None
+
+
+def parse_targeted_weight(value: object, unit: object = None) -> tuple[int | None, str | None]:
+    normalized_unit = normalize_targeted_weight_unit(unit)
+    parsed_value: float | None = None
+
+    if value in (None, "", "null") or isinstance(value, bool):
+        return None, None
+
+    if isinstance(value, int):
+        parsed_value = float(value)
+    elif isinstance(value, float):
+        parsed_value = value
+    elif isinstance(value, str):
+        normalized = value.strip().lower().replace(",", ".")
+        match = re.fullmatch(r"(?P<number>-?\d+(?:\.\d+)?)\s*(?P<unit>kg|g|gr|grammi?|grammo)?", normalized)
+        if match:
+            parsed_value = float(match.group("number"))
+            if normalized_unit is None and match.group("unit"):
+                normalized_unit = normalize_targeted_weight_unit(match.group("unit"))
+
+    if parsed_value is None or parsed_value <= 0:
+        return None, None
+
+    if normalized_unit == "kg":
+        parsed_value *= 1000
+
+    return max(1, round(parsed_value)), "g"
+
+
+def step_has_weighing_payload(step: RecipeStep) -> bool:
+    return step.targeted_weight is not None
+
+
 def step_has_structured_parameters(step: RecipeStep) -> bool:
     return any(
         [
             step.duration_seconds is not None,
             step.temperature_c is not None,
             bool(step.speed),
+            step_has_weighing_payload(step),
             step.reverse,
         ]
     )
@@ -245,6 +325,22 @@ def is_probably_solid_step(text: str) -> bool:
     return any(token in lowered for token in SOLID_FOOD_TOKENS)
 
 
+def is_probably_weighing_step(step: RecipeStep) -> bool:
+    if not step_has_weighing_payload(step):
+        return False
+
+    text = f"{step.description} {step.source_text or ''}".lower()
+    if "bilancia" in text or "pesa" in text:
+        return True
+    if step.duration_seconds is not None or step.temperature_c is not None or step.speed:
+        return False
+    if any(token in text for token in NON_SCALE_TECHNICAL_TOKENS):
+        return False
+    if any(token in text for token in WEIGHING_ACTION_TOKENS):
+        return True
+    return "nel boccale" in text
+
+
 def infer_environment_from_text(step: RecipeStep) -> str:
     text = f"{step.description} {step.source_text or ''}".lower()
     if any(token in text for token in TRANSITION_STEP_TOKENS):
@@ -266,7 +362,7 @@ def infer_program_from_text(step: RecipeStep) -> str:
         return "Cottura al vapore"
     if any(token in text for token in ("soffrig", "soffritt", "rosol", "saltare", "dorare")):
         return "Rosolare"
-    if "bilancia" in text or "pesa" in text:
+    if "bilancia" in text or "pesa" in text or is_probably_weighing_step(step):
         return "Bilancia"
     if "sous-vide" in text or "sous vide" in text:
         return "Cottura sous-vide"
@@ -320,13 +416,36 @@ def format_motion(reverse: bool) -> str:
     return "Antiorario" if reverse else "Orario"
 
 
+def format_targeted_weight(targeted_weight: int | None, targeted_weight_unit: str | None) -> str | None:
+    if targeted_weight is None:
+        return None
+    return f"{targeted_weight} {normalize_targeted_weight_unit(targeted_weight_unit) or 'g'}"
+
+
+def compute_scaling_factor(desired_servings: int | None, source_servings: int | None) -> float | None:
+    if not desired_servings or not source_servings or desired_servings <= 0 or source_servings <= 0:
+        return None
+    return desired_servings / source_servings
+
+
+def scale_targeted_weight(targeted_weight: int | None, scaling_factor: float | None) -> int | None:
+    if targeted_weight is None:
+        return None
+    if scaling_factor is None:
+        return targeted_weight
+    return max(1, round(targeted_weight * scaling_factor))
+
+
 def build_parameters_summary(
     program: str | None,
     duration_seconds: int | None,
     temperature_c: int | None,
     speed: str | None,
+    targeted_weight: int | None,
+    targeted_weight_unit: str | None,
     reverse: bool,
 ) -> str:
+    weight_summary = format_targeted_weight(targeted_weight, targeted_weight_unit)
     if not program:
         parts: list[str] = []
         if duration_seconds is not None:
@@ -335,8 +454,15 @@ def build_parameters_summary(
             parts.append(f"{temperature_c} C")
         if speed:
             parts.append(f"Vel {speed}")
+        if weight_summary and not parts:
+            parts.append(weight_summary)
         if reverse:
             parts.append("Antiorario")
+        return " | ".join(parts)
+    if program == "Bilancia":
+        parts = [program]
+        if weight_summary:
+            parts.append(weight_summary)
         return " | ".join(parts)
     if program == "Cottura personalizzata":
         return (
@@ -362,6 +488,8 @@ def build_step_parameters_summary(
     duration_seconds: int | None,
     temperature_c: int | None,
     speed: str | None,
+    targeted_weight: int | None,
+    targeted_weight_unit: str | None,
     reverse: bool,
 ) -> str:
     if environment == "external":
@@ -373,9 +501,9 @@ def build_step_parameters_summary(
         return " | ".join(parts)
     if environment == "transition":
         if program:
-            return build_parameters_summary(program, duration_seconds, temperature_c, speed, reverse)
+            return build_parameters_summary(program, duration_seconds, temperature_c, speed, targeted_weight, targeted_weight_unit, reverse)
         return "Transizione boccale"
-    return build_parameters_summary(program, duration_seconds, temperature_c, speed, reverse)
+    return build_parameters_summary(program, duration_seconds, temperature_c, speed, targeted_weight, targeted_weight_unit, reverse)
 
 
 def apply_program_defaults(step: RecipeStep, program: str) -> tuple[str, int | None, str | None, bool]:
@@ -384,6 +512,8 @@ def apply_program_defaults(step: RecipeStep, program: str) -> tuple[str, int | N
     speed = step.speed
     reverse = step.reverse
 
+    if program == "Bilancia":
+        return program, None, None, False
     if program == "Rosolare" and temperature_c is None:
         temperature_c = 130
     if "appass" in text:
@@ -416,6 +546,8 @@ def build_output_schema() -> dict[str, object]:
                 "parameters_summary": "string|null",
                 "accessory": "string|null",
                 "detailed_instructions": "string",
+                "targeted_weight": "integer|null",
+                "targeted_weight_unit": "g|null",
                 "duration_seconds": "integer|null",
                 "temperature_c": "integer|null",
                 "speed": "string|null",
@@ -435,7 +567,13 @@ def build_output_schema() -> dict[str, object]:
     }
 
 
-def build_adapted_step(recipe: RecipeData, step: RecipeStep, index: int) -> RecipeAdaptedStep:
+def build_adapted_step(
+    recipe: RecipeData,
+    step: RecipeStep,
+    index: int,
+    *,
+    scaling_factor: float | None = None,
+) -> RecipeAdaptedStep:
     confidence = infer_step_confidence(recipe, step)
     rationale = build_step_rationale(recipe, step, confidence)
     adapted_description = build_step_headline(step)
@@ -446,16 +584,22 @@ def build_adapted_step(recipe: RecipeData, step: RecipeStep, index: int) -> Reci
         program = infer_program_from_text(step)
         program, temperature_c, speed, reverse = apply_program_defaults(step, program)
         accessory = infer_accessory(step, program)
+        targeted_weight = scale_targeted_weight(step.targeted_weight, scaling_factor) if program == "Bilancia" else None
+        targeted_weight_unit = normalize_targeted_weight_unit(step.targeted_weight_unit) if targeted_weight is not None else None
     elif environment == "transition":
         program = infer_transition_program(step)
         temperature_c = None
         speed = None
+        targeted_weight = None
+        targeted_weight_unit = None
         reverse = False
         accessory = None
     else:
         program = None
         temperature_c = step.temperature_c
         speed = None
+        targeted_weight = None
+        targeted_weight_unit = None
         reverse = False
         accessory = None
 
@@ -463,12 +607,23 @@ def build_adapted_step(recipe: RecipeData, step: RecipeStep, index: int) -> Reci
         description=adapted_description,
         environment=environment,
         program=program,
-        parameters_summary=build_step_parameters_summary(environment, program, step.duration_seconds, temperature_c, speed, reverse),
+        parameters_summary=build_step_parameters_summary(
+            environment,
+            program,
+            step.duration_seconds,
+            temperature_c,
+            speed,
+            targeted_weight,
+            targeted_weight_unit,
+            reverse,
+        ),
         accessory=accessory,
         detailed_instructions=detailed_instructions,
         duration_seconds=step.duration_seconds,
         temperature_c=temperature_c,
         speed=speed,
+        targeted_weight=targeted_weight,
+        targeted_weight_unit=targeted_weight_unit,
         reverse=reverse,
         confidence=confidence,
         rationale=rationale,
@@ -504,6 +659,7 @@ def build_adaptation_draft(
     desired_servings: int | None = None,
     source_servings: int | None = None,
 ) -> RecipeAdaptation:
+    scaling_factor = compute_scaling_factor(desired_servings, source_servings)
     structured_steps = sum(1 for step in recipe.steps if step_has_structured_parameters(step))
     total_steps = len(recipe.steps) or 1
     structured_ratio = structured_steps / total_steps
@@ -543,7 +699,10 @@ def build_adaptation_draft(
         reason=reason,
         final_note=final_note,
         warnings=warnings,
-        adapted_steps=[build_adapted_step(recipe, step, index) for index, step in enumerate(recipe.steps, start=1)],
+        adapted_steps=[
+            build_adapted_step(recipe, step, index, scaling_factor=scaling_factor)
+            for index, step in enumerate(recipe.steps, start=1)
+        ],
         ingredient_notes=build_ingredient_notes(recipe),
     )
 
@@ -576,6 +735,7 @@ def build_live_prompt(
         "- Mantieni una timeline unica e cronologica.",
         "- I passaggi environment = external o transition devono restare nella risposta, ma non verranno esportati verso Monsieur Cuisine.",
         "- I passaggi environment = mc sono l'unica base per l'upload automatico verso Monsieur Cuisine.",
+        "- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g.",
         "- Se manca evidenza per tempo, temperatura o velocita, lascia null.",
         "- Aggiungi warning espliciti per ogni ambiguita rilevante.",
         "Schema JSON richiesto:",
@@ -721,10 +881,21 @@ def build_adaptation_from_payload(
         duration_seconds = parse_int_or_none(item.get("duration_seconds")) if "duration_seconds" in item else (base_step.duration_seconds if same_environment_as_base else None)
         temperature_c = parse_int_or_none(item.get("temperature_c")) if "temperature_c" in item else (base_step.temperature_c if same_environment_as_base else None)
         speed = str(item.get("speed")).strip() if item.get("speed") not in (None, "") else (base_step.speed if same_environment_as_base else None)
+        if "targeted_weight" in item or "targeted_weight_unit" in item:
+            targeted_weight, targeted_weight_unit = parse_targeted_weight(item.get("targeted_weight"), item.get("targeted_weight_unit"))
+        elif same_environment_as_base:
+            targeted_weight, targeted_weight_unit = base_step.targeted_weight, base_step.targeted_weight_unit
+        else:
+            targeted_weight, targeted_weight_unit = None, None
         reverse = parse_bool(item.get("reverse")) if "reverse" in item else (base_step.reverse if same_environment_as_base else False)
         if environment != "mc":
             speed = None
+            targeted_weight = None
+            targeted_weight_unit = None
             reverse = False
+        if program != "Bilancia":
+            targeted_weight = None
+            targeted_weight_unit = None
         if environment == "mc" and temperature_c is not None and temperature_c > 60:
             speed_level = parse_speed_level(speed)
             if speed_level and speed_level > 3 and program not in HIGH_SPEED_PROGRAMS:
@@ -739,6 +910,8 @@ def build_adaptation_from_payload(
             duration_seconds,
             temperature_c,
             speed,
+            targeted_weight,
+            targeted_weight_unit,
             reverse,
         )
 
@@ -753,6 +926,8 @@ def build_adaptation_from_payload(
                 duration_seconds=duration_seconds,
                 temperature_c=temperature_c,
                 speed=speed,
+                targeted_weight=targeted_weight,
+                targeted_weight_unit=targeted_weight_unit,
                 reverse=reverse,
                 confidence=parse_confidence(item.get("confidence"), base_step.confidence),
                 rationale=str(item.get("rationale") or base_step.rationale or "").strip() or None,

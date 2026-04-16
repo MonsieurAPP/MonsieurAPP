@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.11.3
+// @version      0.2.12.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -153,9 +153,64 @@
     return normalizeText(step?.program || "");
   }
 
+  function normalizeStepWeightUnit(unit) {
+    const normalized = normalizeText(unit).toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (["g", "gr", "grammo", "grammi"].includes(normalized)) {
+      return "g";
+    }
+    if (normalized === "kg") {
+      return "kg";
+    }
+    return null;
+  }
+
+  function normalizeStepTargetedWeight(value, unit) {
+    if (value == null || value === "") {
+      return null;
+    }
+
+    let parsedValue = null;
+    let parsedUnit = normalizeStepWeightUnit(unit);
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      parsedValue = value;
+    } else {
+      const normalized = normalizeText(value).toLowerCase().replace(/,/g, ".");
+      const match = normalized.match(/(-?\d+(?:\.\d+)?)(?:\s*(kg|g|gr|grammi?|grammo))?/);
+      if (match) {
+        parsedValue = Number(match[1]);
+        if (!parsedUnit && match[2]) {
+          parsedUnit = normalizeStepWeightUnit(match[2]);
+        }
+      }
+    }
+
+    if (!Number.isFinite(parsedValue) || parsedValue <= 0) {
+      return null;
+    }
+
+    if (parsedUnit === "kg") {
+      parsedValue *= 1000;
+    }
+
+    return Math.max(1, Math.round(parsedValue));
+  }
+
+  function formatStepTargetedWeight(step) {
+    if (step?.targetedWeight == null) {
+      return "";
+    }
+    return `${step.targetedWeight} ${step.targetedWeightUnit || "g"}`;
+  }
+
   function stepContainsWeighingCue(step, title = "", description = "", originalProgram = normalizeStepProgram(step)) {
     const weighingContext = normalizeText([
       originalProgram,
+      formatStepTargetedWeight(step),
       step?.parametersSummary,
       title,
       description,
@@ -175,6 +230,10 @@
     return normalizeText(step?.selectedProgram || step?.originalProgram || "").toLowerCase() === CUSTOM_COOKING_PROGRAM_LABEL.toLowerCase();
   }
 
+  function isScaleProgram(step) {
+    return normalizeText(step?.selectedProgram || step?.originalProgram || "").toLowerCase() === SCALE_PROGRAM_LABEL.toLowerCase();
+  }
+
   function normalizeExportedStep(step, index) {
     const environment = normalizeStepEnvironment(step);
     const title = normalizeText(step?.description || step?.detailedInstructions || `Passaggio ${index + 1}`);
@@ -182,6 +241,14 @@
     const isDescriptive = environment !== "mc";
     const originalProgram = normalizeStepProgram(step);
     const selectedProgram = isDescriptive ? null : resolveInternalStepProgram(step, title, description, originalProgram);
+    const targetedWeight = isDescriptive
+      ? null
+      : (
+        normalizeStepTargetedWeight(step?.targetedWeight, step?.targetedWeightUnit)
+        ?? (stepContainsWeighingCue(step, title, description, originalProgram)
+          ? normalizeStepTargetedWeight(step?.parametersSummary || description)
+          : null)
+      );
 
     return {
       title: title || `Passaggio ${index + 1}`,
@@ -189,6 +256,8 @@
       durationSeconds: isDescriptive ? null : step?.durationSeconds,
       temperatureC: isDescriptive ? null : step?.temperatureC,
       speed: isDescriptive ? null : step?.speed,
+      targetedWeight,
+      targetedWeightUnit: targetedWeight != null ? "g" : null,
       reverse: isDescriptive ? false : Boolean(step?.reverse),
       environment,
       isDescriptive,
@@ -208,6 +277,7 @@
       || step.durationSeconds != null
       || step.temperatureC != null
       || normalizeText(step.speed || "")
+      || step.targetedWeight != null
       || step.reverse
     );
   }
@@ -218,6 +288,8 @@
       durationSeconds: null,
       temperatureC: null,
       speed: null,
+      targetedWeight: null,
+      targetedWeightUnit: null,
       reverse: false,
       environment: "external",
       isDescriptive: true,
@@ -1124,6 +1196,13 @@
         ...getStepParameterSliderCandidates(root, "speed"),
       ]),
       formatDebugElementGroup("Candidati rotazione", rotationCandidates),
+    ].join("\n\n");
+  }
+
+  function debugScaleControls(root = findStepEditorRoot()) {
+    return [
+      `Peso selezionato: ${summarizeDebugElement(findStepTargetedWeightField(root))}`,
+      formatDebugElementGroup("Candidati peso", getStepTargetedWeightCandidates(root)),
     ].join("\n\n");
   }
 
@@ -2352,6 +2431,87 @@
     return true;
   }
 
+  function getStepTargetedWeightCandidates(root = findStepEditorRoot()) {
+    return uniqueElements([
+      ...visibleElementsWithin(root, "input[name*='weight' i]"),
+      ...visibleElementsWithin(root, "input[name*='peso' i]"),
+      ...visibleElementsWithin(root, "input[name*='target' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='peso' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='weight' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='peso' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='weight' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='target' i]"),
+      ...visibleElementsWithin(root, "input[type='number']"),
+      ...visibleElementsWithin(root, "input[inputmode='numeric']"),
+      ...visibleElementsWithin(root, "input[inputmode='decimal']"),
+    ]);
+  }
+
+  function findStepTargetedWeightField(root = findStepEditorRoot()) {
+    const candidates = getStepTargetedWeightCandidates(root);
+    const excludePatterns = [
+      "temperatura",
+      "temp",
+      "veloc",
+      "speed",
+      "tempo",
+      "durata",
+      "programma",
+      "program",
+      "titolo",
+      "title",
+      "descrizione",
+      "description",
+    ];
+
+    return selectBestElement(candidates, ["peso", "weight", "targeted", "gram"], excludePatterns, {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    }) || selectBestElement(candidates, [], excludePatterns, {
+      textExtractor: collectScopedFieldText,
+    });
+  }
+
+  async function setStepTargetedWeightField(step, root = findStepEditorRoot()) {
+    if (step?.targetedWeight == null) {
+      return true;
+    }
+
+    const weightField = findStepTargetedWeightField(root);
+    if (!weightField) {
+      return false;
+    }
+
+    const hadDisabled = weightField.hasAttribute("disabled");
+    const hadReadonly = weightField.hasAttribute("readonly");
+    const previousTabIndex = weightField.getAttribute("tabindex");
+    if (hadDisabled) {
+      weightField.removeAttribute("disabled");
+    }
+    if (hadReadonly) {
+      weightField.removeAttribute("readonly");
+    }
+    weightField.setAttribute("tabindex", "0");
+
+    const normalizedWeight = String(step.targetedWeight);
+    await commitTextInputLikeUser(weightField, normalizedWeight);
+    await ensureFieldValue(weightField, normalizedWeight, "Peso target");
+
+    if (hadReadonly) {
+      weightField.setAttribute("readonly", "readonly");
+    }
+    if (hadDisabled) {
+      weightField.setAttribute("disabled", "disabled");
+    }
+    if (previousTabIndex == null) {
+      weightField.removeAttribute("tabindex");
+    } else {
+      weightField.setAttribute("tabindex", previousTabIndex);
+    }
+
+    return true;
+  }
+
   function findStepRotationButton(root, reverse) {
     const expectedValue = reverse ? "0" : "1";
     const buttonByValue = visibleElementsWithin(root, `button[value='${expectedValue}'], [role='radio'][value='${expectedValue}']`)[0] || null;
@@ -2645,6 +2805,10 @@
     return describeMissingCustomCookingControls(step, root).length === 0;
   }
 
+  function hasRequiredScaleControls(step, root) {
+    return step?.targetedWeight == null || Boolean(findStepTargetedWeightField(root));
+  }
+
   function describeMissingCustomCookingControls(step, root) {
     const requiresTemperature = step?.temperatureC != null;
     const requiresDuration = step?.durationSeconds != null;
@@ -2688,6 +2852,19 @@
     while (Date.now() < deadline) {
       const root = findStepEditorRoot();
       if (hasRequiredCustomCookingControls(step, root)) {
+        return root;
+      }
+      await sleep(150);
+    }
+
+    return findStepEditorRoot();
+  }
+
+  async function waitForScaleControls(step, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const root = findStepEditorRoot();
+      if (hasRequiredScaleControls(step, root)) {
         return root;
       }
       await sleep(150);
@@ -2785,6 +2962,15 @@
     }
 
     return true;
+  }
+
+  async function applyScaleConfiguration(step, index) {
+    const root = await waitForScaleControls(step, 8000);
+    if (await setStepTargetedWeightField(step, root)) {
+      return true;
+    }
+
+    throw new Error(`Impossibile impostare il peso target per lo step ${index + 1}.\n\nDiagnostica controlli bilancia:\n${debugScaleControls(root)}\n\nCampi visibili:\n${debugVisibleFields(12)}\n\nBottoni visibili:\n${debugVisibleButtons(16)}`);
   }
 
   function collectStepButtonText(element) {
@@ -3007,6 +3193,10 @@
       await commitTextInputLikeUser(descriptionField, step.description);
       await ensureFieldValue(descriptionField, step.description, "Descrizione");
       await sleep(200);
+    }
+
+    if (stepHasTechnicalPayload(step) && isScaleProgram(step)) {
+      await applyScaleConfiguration(step, index);
     }
 
     if (stepHasTechnicalPayload(step) && isCustomCookingProgram(step)) {

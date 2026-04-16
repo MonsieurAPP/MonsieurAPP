@@ -6,6 +6,8 @@
   <div class="muted-small">Job {{ job.id[:8] }}</div>
 </div>
 
+{% include "partials/service_tools.html" %}
+
 {% include "partials/job_status.html" %}
 <script>
   const JOB_ID = {{ job.id|tojson }};

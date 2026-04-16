@@ -27,6 +27,8 @@ class ImportJob:
     debug_traceback: Optional[str] = None
     recipe_json: Optional[str] = None
     adaptation_json: Optional[str] = None
+    manual_export_payload: Optional[dict[str, object]] = None
+    manual_export_payload_json: Optional[str] = None
     ingredients_text: Optional[str] = None
     ingredients_guide_text: Optional[str] = None
     scaled_ingredients_text: Optional[str] = None
@@ -79,6 +81,8 @@ class InMemoryJobStore:
         debug_traceback: Optional[str] = None,
         recipe_json: Optional[str] = None,
         adaptation_json: Optional[str] = None,
+        manual_export_payload: Optional[dict[str, object]] = None,
+        manual_export_payload_json: Optional[str] = None,
         ingredients_text: Optional[str] = None,
         ingredients_guide_text: Optional[str] = None,
         scaled_ingredients_text: Optional[str] = None,
@@ -117,6 +121,10 @@ class InMemoryJobStore:
                 job.recipe_json = recipe_json
             if adaptation_json is not None:
                 job.adaptation_json = adaptation_json
+            if manual_export_payload is not None:
+                job.manual_export_payload = manual_export_payload
+            if manual_export_payload_json is not None:
+                job.manual_export_payload_json = manual_export_payload_json
             if ingredients_text is not None:
                 job.ingredients_text = ingredients_text
             if ingredients_guide_text is not None:

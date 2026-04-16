@@ -42,6 +42,7 @@ Per Cottura personalizzata specifica sempre: Tempo | Temperatura | Velocita | Se
 - Accessori: specifica quando usare cestello, vaporiera profonda, vaporiera piana o farfalla.
 - Aggiunta ingredienti: se il testo contiene piu' aggiunte e una cottura, scomponi in passaggi distinti e cronologici.
 - Aggiunta ingredienti con peso espresso in g o grammi: preferisci Bilancia se il passaggio e' solo di carico ingrediente.
+- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g.
 - Aggiunta ingredienti senza peso misurabile: puoi lasciare program nullo se il passaggio e' puramente manuale o di carico non assistito.
 - Prudenza: non inventare ingredienti, quantita, tempi, temperature o velocita non supportati dal testo. Se manca un dato, lascialo nullo e segnala un warning.
 
@@ -56,7 +57,7 @@ La lista adapted_steps deve essere una timeline unica ordinata. Ogni elemento ra
 - parameters_summary: programma o azione compatta del passaggio
 - accessory: accessorio richiesto oppure null
 - detailed_instructions: istruzioni complete da eseguire
-- duration_seconds, temperature_c, speed, reverse, confidence, rationale, source_refs
+- targeted_weight, targeted_weight_unit, duration_seconds, temperature_c, speed, reverse, confidence, rationale, source_refs
 
 Linee guida per environment:
 - mc: tutto cio' che l'utente fa nel boccale o tramite programmi/accessori Monsieur Cuisine

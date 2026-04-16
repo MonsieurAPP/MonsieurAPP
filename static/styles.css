@@ -47,7 +47,8 @@ a {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -252,6 +253,7 @@ input {
   font-family: Consolas, "Courier New", monospace;
   font-size: 0.82rem;
   line-height: 1.5;
+  resize: vertical;
 }
 
 .prompt-box {

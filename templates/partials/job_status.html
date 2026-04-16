@@ -72,7 +72,11 @@
       </div>
     </div>
     <div class="job-text" style="margin-top: 0;">
-      Conferma la ricetta solo quando hai finito di verificare porzioni, ingredienti e versione finale da usare.
+      {% if job.manual_export_payload %}
+        Questo job arriva da un payload JSON gia' pronto ed e' stato marcato come confermato al momento del caricamento.
+      {% else %}
+        Conferma la ricetta solo quando hai finito di verificare porzioni, ingredienti e versione finale da usare.
+      {% endif %}
     </div>
     {% if job.status in ['completed', 'awaiting_review'] and not job.confirmed_at %}
       <form action="/imports/{{ job.id }}/confirm" method="post" hx-post="/imports/{{ job.id }}/confirm" hx-target="#job-status" hx-swap="outerHTML" style="margin-top: 8px;">
@@ -84,6 +88,26 @@
   </div>
 
   {% if job.recipe_data %}
+    {% if job.manual_export_payload %}
+      <div class="info-box">
+        <div class="row-between">
+          <h2 class="label">Portale Monsieur Cuisine</h2>
+          <a class="button button-secondary" href="https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart#mc-import={{ job.id }}" target="_blank" rel="noreferrer">Apri con Tampermonkey</a>
+        </div>
+        <div class="job-text" style="margin-top: 0;">
+          Questo job non passa dall'estrazione URL: il payload incollato viene normalizzato, salvato come ricetta confermata e servito direttamente a Tampermonkey tramite gli endpoint locali della app.
+        </div>
+      </div>
+
+      <div class="info-box">
+        <div class="row-between">
+          <h2 class="label">Payload pronto per Tampermonkey</h2>
+          <button type="button" class="button button-secondary" onclick="copyFromTarget('manual-export-payload')">Copia payload</button>
+        </div>
+        <textarea id="manual-export-payload" class="input prompt-textarea" rows="18">{{ job.manual_export_payload_json }}</textarea>
+      </div>
+    {% endif %}
+
     {% if job.desired_servings %}
       <div class="info-box">
         <div class="row-between">
@@ -296,6 +320,12 @@
                       <div class="stat-label">Programma/Parametri</div>
                       <div class="info-value">{{ step.parameters_summary or '-' }}</div>
                     </div>
+                    {% if step.targeted_weight is not none %}
+                      <div>
+                        <div class="stat-label">Peso target</div>
+                        <div class="info-value">{{ step.targeted_weight }} {{ step.targeted_weight_unit or 'g' }}</div>
+                      </div>
+                    {% endif %}
                   {% endif %}
                   <div>
                     <div class="stat-label">Istruzioni dettagliate</div>
@@ -312,6 +342,8 @@ Ambiente: {{ 'Monsieur Cuisine' if step.program else 'Fuori dal Monsieur' }}
 {{ 'Programma Monsieur Cuisine' if step.program else 'Tipo' }}: {{ step.program or step.parameters_summary or 'Attivita esterna' }}
 {% if step.program %}Accessorio: {{ step.accessory or '-' }}
 Programma/Parametri: {{ step.parameters_summary or '-' }}
+{% if step.targeted_weight is not none %}Peso target: {{ step.targeted_weight }} {{ step.targeted_weight_unit or 'g' }}
+{% endif %}
 {% endif %}Istruzioni dettagliate: {{ step.detailed_instructions or step.description }}
 
 {% endfor %}</textarea>

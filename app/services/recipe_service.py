@@ -25,6 +25,10 @@ UNIT_PATTERN = (
     r"arance?|mandarini|fragole|olive|filetti?|tranci"
 )
 QB_PATTERN = r"q\s*\.?\s*b\s*\.?|quanto basta"
+WEIGHT_PATTERN = re.compile(
+    r"\b(?P<value>\d+/\d+|\d+(?:[.,]\d+)?(?:\s+\d+/\d+)?)\s*(?P<unit>kg|g|gr|grammi?|grammo)\b",
+    flags=re.IGNORECASE,
+)
 
 
 class RecipeExtractionError(Exception):
@@ -201,6 +205,63 @@ def parse_duration_to_seconds(raw_value: Optional[str]) -> Optional[int]:
     return None
 
 
+def parse_numeric_step_value(raw_value: Optional[str]) -> Optional[float]:
+    if not raw_value:
+        return None
+
+    normalized = normalize_whitespace(normalize_fraction_characters(raw_value)).lower().replace(",", ".")
+    if not normalized:
+        return None
+
+    mixed_fraction_match = re.fullmatch(r"(\d+)\s+(\d+)/(\d+)", normalized)
+    if mixed_fraction_match:
+        integer_part = float(mixed_fraction_match.group(1))
+        numerator = float(mixed_fraction_match.group(2))
+        denominator = float(mixed_fraction_match.group(3))
+        if denominator:
+            return integer_part + (numerator / denominator)
+        return None
+
+    simple_fraction_match = re.fullmatch(r"(\d+)/(\d+)", normalized)
+    if simple_fraction_match:
+        numerator = float(simple_fraction_match.group(1))
+        denominator = float(simple_fraction_match.group(2))
+        if denominator:
+            return numerator / denominator
+        return None
+
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
+
+
+def normalize_weight_unit(raw_value: Optional[str]) -> Optional[str]:
+    normalized = normalize_whitespace(raw_value or "").lower()
+    if normalized in {"g", "gr", "grammo", "grammi"}:
+        return "g"
+    if normalized == "kg":
+        return "kg"
+    return None
+
+
+def extract_targeted_weight(step_text: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+    normalized = normalize_whitespace(normalize_fraction_characters(step_text or ""))
+    if not normalized:
+        return None, None
+
+    for match in WEIGHT_PATTERN.finditer(normalized):
+        parsed_value = parse_numeric_step_value(match.group("value"))
+        unit = normalize_weight_unit(match.group("unit"))
+        if parsed_value is None or unit is None:
+            continue
+
+        weight_in_grams = parsed_value * 1000 if unit == "kg" else parsed_value
+        return max(1, round(weight_in_grams)), "g"
+
+    return None, None
+
+
 def parse_temperature(raw_value: Optional[str]) -> Optional[int]:
     if not raw_value:
         return None
@@ -255,11 +316,14 @@ def build_step(
     source_text: Optional[str] = None,
 ) -> RecipeStep:
     flags = map_bimby_flags_to_mc(source_text or description)
+    targeted_weight, targeted_weight_unit = extract_targeted_weight(source_text or description)
     return RecipeStep(
         description=normalize_whitespace(description),
         duration_seconds=parse_duration_to_seconds(duration),
         temperature_c=parse_temperature(temperature),
         speed=map_bimby_speed_to_mc(speed),
+        targeted_weight=targeted_weight,
+        targeted_weight_unit=targeted_weight_unit,
         reverse=flags["reverse"],
         source_speed=speed,
         source_text=source_text or description,
