@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.4
+// @version      0.2.11.3
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -17,6 +17,10 @@
 
   const APP_BASE_URL = "http://127.0.0.1:8000";
   const TARGET_URL = "https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart";
+  const SCALE_PROGRAM_LABEL = "Bilancia";
+  const CUSTOM_COOKING_PROGRAM_LABEL = "Cottura personalizzata";
+  const STEP_PROGRAM_SWITCH_SELECTOR = "input[role='switch'][type='checkbox'], input[type='checkbox'][role='switch'], input[aria-checked][type='checkbox']";
+  const CUSTOM_COOKING_TEMPERATURE_STEPS = [0, 37, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130];
 
   GM_addStyle(`
     .mc-bridge-fab {
@@ -149,6 +153,103 @@
     return normalizeText(step?.program || "");
   }
 
+  function stepContainsWeighingCue(step, title = "", description = "", originalProgram = normalizeStepProgram(step)) {
+    const weighingContext = normalizeText([
+      originalProgram,
+      step?.parametersSummary,
+      title,
+      description,
+    ].filter(Boolean).join(" ")).toLowerCase();
+
+    return originalProgram.toLowerCase() === SCALE_PROGRAM_LABEL.toLowerCase()
+      || /\bbilancia\b|\bpesa(?:re|ta|te|to|ti)?\b|\bpesare\b|\bgramm(?:o|i)?\b|\b\d+(?:[.,]\d+)?\s*(?:g|gr|grammi?)\b/.test(weighingContext);
+  }
+
+  function resolveInternalStepProgram(step, title = "", description = "", originalProgram = normalizeStepProgram(step)) {
+    return stepContainsWeighingCue(step, title, description, originalProgram)
+      ? SCALE_PROGRAM_LABEL
+      : CUSTOM_COOKING_PROGRAM_LABEL;
+  }
+
+  function isCustomCookingProgram(step) {
+    return normalizeText(step?.selectedProgram || step?.originalProgram || "").toLowerCase() === CUSTOM_COOKING_PROGRAM_LABEL.toLowerCase();
+  }
+
+  function normalizeExportedStep(step, index) {
+    const environment = normalizeStepEnvironment(step);
+    const title = normalizeText(step?.description || step?.detailedInstructions || `Passaggio ${index + 1}`);
+    const description = normalizeText(step?.detailedInstructions || step?.description || title);
+    const isDescriptive = environment !== "mc";
+    const originalProgram = normalizeStepProgram(step);
+    const selectedProgram = isDescriptive ? null : resolveInternalStepProgram(step, title, description, originalProgram);
+
+    return {
+      title: title || `Passaggio ${index + 1}`,
+      description: description || title || `Passaggio ${index + 1}`,
+      durationSeconds: isDescriptive ? null : step?.durationSeconds,
+      temperatureC: isDescriptive ? null : step?.temperatureC,
+      speed: isDescriptive ? null : step?.speed,
+      reverse: isDescriptive ? false : Boolean(step?.reverse),
+      environment,
+      isDescriptive,
+      isTechnicalOnly: false,
+      originalProgram: originalProgram || null,
+      selectedProgram,
+    };
+  }
+
+  function stepHasTechnicalPayload(step) {
+    if (!step || step.isDescriptive || step.environment === "external") {
+      return false;
+    }
+
+    return Boolean(
+      normalizeText(step.selectedProgram || step.originalProgram || "")
+      || step.durationSeconds != null
+      || step.temperatureC != null
+      || normalizeText(step.speed || "")
+      || step.reverse
+    );
+  }
+
+  function buildDescriptiveCompanionStep(step) {
+    return {
+      ...step,
+      durationSeconds: null,
+      temperatureC: null,
+      speed: null,
+      reverse: false,
+      environment: "external",
+      isDescriptive: true,
+      isTechnicalOnly: false,
+      originalProgram: null,
+      selectedProgram: null,
+    };
+  }
+
+  function buildTechnicalCompanionStep(step) {
+    return {
+      ...step,
+      isDescriptive: false,
+      isTechnicalOnly: true,
+    };
+  }
+
+  function shouldSplitTechnicalStep(step) {
+    return stepHasTechnicalPayload(step) && isCustomCookingProgram(step);
+  }
+
+  function expandNormalizedStep(step) {
+    if (!shouldSplitTechnicalStep(step)) {
+      return [step];
+    }
+
+    return [
+      buildDescriptiveCompanionStep(step),
+      buildTechnicalCompanionStep(step),
+    ];
+  }
+
   function isTransitionLikeStep(step) {
     const program = normalizeStepProgram(step).toLowerCase();
     const signature = buildStepSignature(step).toLowerCase();
@@ -177,69 +278,6 @@
     return normalizeText(step?.description || step?.detailedInstructions || "");
   }
 
-  function buildIgnoredStepSignatureCounts(payload) {
-    const counts = new Map();
-
-    for (const bucket of [payload.manualSteps, payload.transitionSteps]) {
-      if (!Array.isArray(bucket)) continue;
-
-      for (const step of bucket) {
-        const signature = buildStepSignature(step);
-        if (!signature) continue;
-        counts.set(signature, (counts.get(signature) || 0) + 1);
-      }
-    }
-
-    return counts;
-  }
-
-  function filterMachineSteps(rawSteps, ignoredSignatureCounts, preferOperationalTimeline, useProgramFallback) {
-    let ignoredCount = 0;
-
-    const machineSteps = rawSteps.filter((step) => {
-      if (!step || typeof step !== "object") {
-        return false;
-      }
-
-      if (stepHasExplicitEnvironment(step)) {
-        const keepStep = normalizeStepEnvironment(step) === "mc";
-        if (!keepStep) {
-          ignoredCount += 1;
-        }
-        return keepStep;
-      }
-
-      if (useProgramFallback) {
-        const keepStep = Boolean(normalizeStepProgram(step)) && !isTransitionLikeStep(step);
-        if (!keepStep) {
-          ignoredCount += 1;
-        }
-        return keepStep;
-      }
-
-      if (!preferOperationalTimeline) {
-        const signature = buildStepSignature(step);
-        const remainingIgnored = signature ? (ignoredSignatureCounts.get(signature) || 0) : 0;
-        if (remainingIgnored > 0) {
-          ignoredCount += 1;
-          if (remainingIgnored === 1) {
-            ignoredSignatureCounts.delete(signature);
-          } else {
-            ignoredSignatureCounts.set(signature, remainingIgnored - 1);
-          }
-          return false;
-        }
-      }
-
-      return true;
-    });
-
-    return {
-      machineSteps,
-      ignoredCount,
-    };
-  }
-
   function normalizeExportedRecipe(payload) {
     const operationalTimeline = Array.isArray(payload.operationalTimeline)
       ? payload.operationalTimeline
@@ -250,11 +288,11 @@
       : Array.isArray(payload.steps)
         ? payload.steps
         : [];
-    const useProgramFallback = shouldUseProgramFallback(rawSteps);
-    const ignoredSignatureCounts = buildIgnoredStepSignatureCounts(payload);
-    const { machineSteps, ignoredCount } = filterMachineSteps(rawSteps, ignoredSignatureCounts, preferOperationalTimeline, useProgramFallback);
-    const manualStepCount = Array.isArray(payload.manualSteps) ? payload.manualSteps.length : 0;
-    const transitionStepCount = Array.isArray(payload.transitionSteps) ? payload.transitionSteps.length : 0;
+    const normalizedSteps = rawSteps
+      .filter((step) => step && typeof step === "object")
+      .map((step, index) => normalizeExportedStep(step, index))
+      .flatMap((step) => expandNormalizedStep(step));
+    const descriptiveStepCount = normalizedSteps.filter((step) => step.isDescriptive).length;
 
     return {
       title: payload.title,
@@ -273,16 +311,8 @@
             finalText: ingredient.finalText || "",
           }))
         : [],
-      steps: machineSteps.map((step) => ({
-        description: step.description || step.detailedInstructions || "",
-        durationSeconds: step.durationSeconds,
-        temperatureC: step.temperatureC,
-        speed: step.speed,
-        reverse: Boolean(step.reverse),
-      })),
-      ignoredNonMachineStepsCount: preferOperationalTimeline
-        ? Math.max(0, rawSteps.length - machineSteps.length)
-        : Math.max(ignoredCount, manualStepCount + transitionStepCount),
+      steps: normalizedSteps,
+      descriptiveStepCount,
       yieldText: payload.yieldText || null,
       totalTimeMinutes: payload.totalTimeMinutes || null,
       exportMode: payload.exportMode || "selected",
@@ -295,8 +325,8 @@
   async function fetchRecipeFromApp(jobId) {
     const payload = await apiRequest("GET", `/api/imports/${jobId}/export?mode=selected`);
     const recipe = normalizeExportedRecipe(payload);
-    if (recipe.ignoredNonMachineStepsCount) {
-      log(`Ignorati ${recipe.ignoredNonMachineStepsCount} passaggi non Monsieur Cuisine dal payload esportato.`);
+    if (recipe.descriptiveStepCount) {
+      log(`Esportati ${recipe.descriptiveStepCount} passaggi descrittivi oltre agli step strutturati.`);
     }
     return recipe;
   }
@@ -512,6 +542,14 @@
     return normalizeText(hiddenInput?.value || element.value || element.textContent || "");
   }
 
+  function readSelectLikeFieldValue(element) {
+    if (!element) return "";
+
+    const slot = element.closest(".v-select__slot, .v-input__slot, .v-input, .v-select, [role='combobox']");
+    const hiddenInput = slot?.querySelector("input[type='hidden']");
+    return normalizeText(hiddenInput?.value || element.value || slot?.textContent || element.textContent || "");
+  }
+
   function findIngredientFieldNearRow(referenceField, fallbackIndex = 0) {
     const ingredientInputs = findIngredientNameInputs();
     if (!ingredientInputs.length) return null;
@@ -647,13 +685,13 @@
   }
 
   function createRecipePanel(recipe, onApply, onDismiss) {
-    const ignoredStepsNote = recipe.ignoredNonMachineStepsCount
-      ? `<br>${recipe.ignoredNonMachineStepsCount} passaggi esterni/manuali ignorati automaticamente`
+    const descriptiveStepsNote = recipe.descriptiveStepCount
+      ? `<br>${recipe.descriptiveStepCount} passaggi esportati come descrittivi`
       : "";
 
     return createPanel({
       title: "Ricetta confermata pronta",
-      bodyHtml: `<strong>${escapeHtml(recipe.title)}</strong><br>${recipe.ingredients.length} ingredienti, ${recipe.steps.length} step Monsieur Cuisine${ignoredStepsNote}`,
+      bodyHtml: `<strong>${escapeHtml(recipe.title)}</strong><br>${recipe.ingredients.length} ingredienti, ${recipe.steps.length} passaggi esportati verso Monsieur Cuisine${descriptiveStepsNote}`,
       primaryLabel: "Leggi ricetta confermata",
       onPrimary: onApply,
       secondaryLabel: "Chiudi",
@@ -681,6 +719,10 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function sleep(ms) {
@@ -854,6 +896,105 @@
     return candidates[0]?.element || null;
   }
 
+  function findFieldWithin(root, { selectors = [], patterns = [] } = {}) {
+    for (const selector of selectors) {
+      const target = visibleElementsWithin(root, selector)[0];
+      if (target) return target;
+    }
+
+    const normalizedPatterns = patterns.map((pattern) => normalizeText(pattern).toLowerCase()).filter(Boolean);
+    if (!normalizedPatterns.length) return null;
+
+    const candidates = visibleElementsWithin(root, EDITABLE_FIELD_SELECTOR)
+      .map((element) => {
+        const haystack = collectFieldText(element);
+        const score = normalizedPatterns.reduce((total, pattern) => total + Number(haystack.includes(pattern)), 0);
+        return { element, score };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+
+    return candidates[0]?.element || null;
+  }
+
+  function countPatternMatches(haystack, patterns = []) {
+    return patterns.reduce((total, pattern) => total + Number(haystack.includes(normalizeText(pattern).toLowerCase())), 0);
+  }
+
+  function collectScopedFieldText(element) {
+    if (!element) return "";
+
+    const chunks = [
+      element.getAttribute("name"),
+      element.getAttribute("placeholder"),
+      element.getAttribute("aria-label"),
+      element.getAttribute("data-testid"),
+      element.id,
+      element.textContent,
+    ];
+
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      labelledBy.split(/\s+/).filter(Boolean).forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) chunks.push(node.textContent || "");
+      });
+    }
+
+    if (element.id && window.CSS?.escape) {
+      const labels = document.querySelectorAll(`label[for="${window.CSS.escape(element.id)}"]`);
+      labels.forEach((label) => chunks.push(label.textContent || ""));
+    }
+
+    const fieldContainer = element.closest(
+      ".v-input, .v-input__control, .v-input__slot, .v-select, .v-autocomplete, .v-text-field, .v-slider, .v-selection-control, [role='group']"
+    );
+    if (fieldContainer && fieldContainer !== element) {
+      chunks.push(fieldContainer.getAttribute?.("data-testid"));
+      chunks.push(fieldContainer.getAttribute?.("aria-label"));
+      chunks.push(fieldContainer.textContent || "");
+    }
+
+    return normalizeText(chunks.filter(Boolean).join(" ")).toLowerCase();
+  }
+
+  function getElementPatternScore(element, includePatterns = [], excludePatterns = [], textExtractor = collectFieldText) {
+    const haystack = textExtractor(element);
+    const includeScore = countPatternMatches(haystack, includePatterns);
+    const excludeScore = countPatternMatches(haystack, excludePatterns);
+    return includeScore - (excludeScore * 3);
+  }
+
+  function selectBestElement(elements, includePatterns = [], excludePatterns = [], options = {}) {
+    const textExtractor = options.textExtractor || collectFieldText;
+    const requireIncludeMatch = options.requireIncludeMatch === true;
+    const uniqueCandidates = uniqueElements(elements).filter((element) => isVisibleElement(element));
+    if (!uniqueCandidates.length) {
+      return null;
+    }
+
+    const ranked = uniqueCandidates
+      .map((element) => ({
+        element,
+        includeScore: countPatternMatches(textExtractor(element), includePatterns),
+        excludeScore: countPatternMatches(textExtractor(element), excludePatterns),
+        score: getElementPatternScore(element, includePatterns, excludePatterns, textExtractor),
+      }))
+      .sort((left, right) => right.includeScore - left.includeScore || left.excludeScore - right.excludeScore || right.score - left.score);
+
+    if (includePatterns.length) {
+      const positiveMatch = ranked.find((candidate) => candidate.includeScore > 0);
+      if (positiveMatch) {
+        return positiveMatch.element;
+      }
+      if (requireIncludeMatch) {
+        return null;
+      }
+    }
+
+    return ranked.find((candidate) => candidate.score >= 0)?.element || ranked[0]?.element || null;
+  }
+
   function findAllFields({ selectors = [], patterns = [] } = {}) {
     const found = [];
     const seen = new Set();
@@ -906,6 +1047,86 @@
       .join("\n");
   }
 
+  function summarizeDebugElement(element) {
+    if (!(element instanceof Element)) {
+      return "nessuno";
+    }
+
+    const tagName = element.tagName.toLowerCase();
+    const descriptor = [
+      element.getAttribute("type") ? `type=${element.getAttribute("type")}` : "",
+      element.getAttribute("role") ? `role=${element.getAttribute("role")}` : "",
+      element.getAttribute("name") ? `name=${element.getAttribute("name")}` : "",
+      element.id ? `id=${element.id}` : "",
+      element.getAttribute("placeholder") ? `placeholder=${element.getAttribute("placeholder")}` : "",
+      element.getAttribute("aria-label") ? `aria=${element.getAttribute("aria-label")}` : "",
+      element.getAttribute("aria-valuenow") ? `aria-valuenow=${element.getAttribute("aria-valuenow")}` : "",
+      readFieldValue(element) ? `value=${readFieldValue(element)}` : "",
+    ].filter(Boolean).join(" ");
+    const scopedText = truncateText(
+      element.getAttribute("role") === "slider"
+        ? collectStepSliderText(element)
+        : collectScopedFieldText(element),
+      180,
+    ) || "senza testo";
+
+    return `${tagName}${descriptor ? ` ${descriptor}` : ""} -> ${scopedText}`;
+  }
+
+  function formatDebugElementGroup(title, elements, limit = 6) {
+    const visibleCandidates = uniqueElements(elements).filter((element) => isVisibleElement(element) || isSliderLikeVisible(element)).slice(0, limit);
+    if (!visibleCandidates.length) {
+      return `${title}: nessuno`;
+    }
+
+    return `${title}:\n${visibleCandidates.map((element, index) => `${index + 1}. ${summarizeDebugElement(element)}`).join("\n")}`;
+  }
+
+  function debugCustomCookingControls(root = findStepEditorRoot()) {
+    const rotationCandidates = uniqueElements([
+      ...visibleElementsWithin(root, "input[type='radio'], input[type='checkbox']"),
+      ...visibleElementsWithin(root, "label, button, [role='button'], [role='radio']"),
+    ]).filter((element) => /rot|senso|orario|antiorario|reverse|clock|direction|mdi-rotate|mdi-undo|mdi-redo/.test(
+      normalizeText([
+        collectFieldText(element),
+        collectScopedFieldText(element),
+        element.textContent,
+        element.className,
+      ].filter(Boolean).join(" ")).toLowerCase()
+    ));
+
+    return [
+      `Temperatura selezionata: ${summarizeDebugElement(findStepTemperatureInput(root) || findStepTemperatureSlider(root))}`,
+      `Velocita selezionata: ${summarizeDebugElement(findStepSpeedField(root) || findStepSpeedSlider(root))}`,
+      `Rotazione selezionata: ${summarizeDebugElement(findStepRotationInput(root, true) || findStepRotationButton(root, true) || findStepReverseToggle(root))}`,
+      formatDebugElementGroup("Candidati temperatura", [
+        ...visibleElementsWithin(root, "input[name*='temp' i]"),
+        ...visibleElementsWithin(root, "input[placeholder*='°' i]"),
+        ...visibleElementsWithin(root, "input[placeholder*='temperatura' i]"),
+        ...visibleElementsWithin(root, "input[aria-label*='temperatura' i]"),
+        ...visibleElementsWithin(root, "input[aria-label*='temp' i]"),
+        ...visibleElementsWithin(root, "input[type='number']"),
+        ...visibleElementsWithin(root, "input[inputmode='numeric']"),
+        ...visibleElementsWithin(root, "input[inputmode='decimal']"),
+      ]),
+      formatDebugElementGroup("Candidati slider temperatura", [
+        ...getStepParameterSliderCandidates(root, "temperature"),
+      ]),
+      formatDebugElementGroup("Candidati velocita", [
+        ...visibleElementsWithin(root, "select[name*='speed' i]"),
+        ...visibleElementsWithin(root, "input[name*='speed' i]"),
+        ...visibleElementsWithin(root, "input[placeholder*='veloc' i]"),
+        ...visibleElementsWithin(root, "input[aria-label*='veloc' i]"),
+        ...visibleElementsWithin(root, "input[readonly]"),
+        ...visibleElementsWithin(root, "[role='combobox'] input"),
+      ]),
+      formatDebugElementGroup("Candidati slider velocita", [
+        ...getStepParameterSliderCandidates(root, "speed"),
+      ]),
+      formatDebugElementGroup("Candidati rotazione", rotationCandidates),
+    ].join("\n\n");
+  }
+
   function isElementDisabled(element) {
     return Boolean(element?.disabled || element?.getAttribute("aria-disabled") === "true");
   }
@@ -929,6 +1150,119 @@
     const style = window.getComputedStyle(element);
     const rect = element.getBoundingClientRect();
     return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+
+  function isSliderLikeVisible(element) {
+    if (!(element instanceof Element)) {
+      return false;
+    }
+
+    const style = window.getComputedStyle(element);
+    if (style.visibility === "hidden" || style.display === "none") {
+      return false;
+    }
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      return true;
+    }
+
+    const container = element.closest(".parameter-temperature-step-field, .parameter-speed-field, .v-input__slider, .v-input, .v-slider");
+    if (!container || container === element) {
+      return false;
+    }
+
+    const containerStyle = window.getComputedStyle(container);
+    const containerRect = container.getBoundingClientRect();
+    return containerStyle.visibility !== "hidden"
+      && containerStyle.display !== "none"
+      && containerRect.width > 0
+      && containerRect.height > 0;
+  }
+
+  function getStepSliderCandidates(root = findStepEditorRoot()) {
+    const scope = root instanceof Element ? root : document;
+    return uniqueElements([
+      ...Array.from(scope.querySelectorAll("[role='slider']")),
+      ...Array.from(scope.querySelectorAll(".v-slider__thumb-container[role='slider']")),
+    ]).filter((element) => isSliderLikeVisible(element));
+  }
+
+  function collectStepSliderText(element) {
+    if (!element) {
+      return "";
+    }
+
+    const container = element.closest(".parameter-temperature-step-field, .parameter-speed-field")
+      || element.closest(".v-input__slider")
+      || element.closest(".v-input")
+      || element.closest(".v-slider")
+      || element;
+    const relatedNodes = uniqueElements([
+      element,
+      container,
+      container.querySelector?.("label"),
+      container.querySelector?.(".v-label"),
+    ]);
+    const imageSources = container
+      ? Array.from(container.querySelectorAll("img")).map((image) => image.getAttribute("src")).filter(Boolean)
+      : [];
+
+    return normalizeText([
+      collectScopedFieldText(element),
+      ...relatedNodes.flatMap((node) => [
+        node?.className,
+        node?.getAttribute?.("aria-label"),
+        node?.getAttribute?.("data-testid"),
+        node?.textContent,
+      ]),
+      ...imageSources,
+    ].filter(Boolean).join(" ")).toLowerCase();
+  }
+
+  function getStepParameterSliderCandidates(root = findStepEditorRoot(), parameter) {
+    const config = parameter === "speed"
+      ? {
+          includePatterns: ["parameter-speed", "control-speed", "veloc", "speed", "rpm"],
+          excludePatterns: ["parameter-temperature", "control-temperature", "temperatura", "temperature", "temp", "timer", "tempo", "durata", "duration"],
+          containerSelector: ".parameter-speed-field",
+        }
+      : {
+          includePatterns: ["parameter-temperature", "control-temperature", "temperatura", "temperature", "temp"],
+          excludePatterns: ["parameter-speed", "control-speed", "veloc", "speed", "timer", "tempo", "durata", "duration"],
+          containerSelector: ".parameter-temperature-step-field",
+        };
+    const ranked = getStepSliderCandidates(root)
+      .map((element) => {
+        const signature = collectStepSliderText(element);
+        const includeScore = countPatternMatches(signature, config.includePatterns);
+        const excludeScore = countPatternMatches(signature, config.excludePatterns);
+        const containerScore = element.closest(config.containerSelector) ? 5 : 0;
+
+        return {
+          element,
+          includeScore,
+          excludeScore,
+          containerScore,
+          score: includeScore + containerScore - (excludeScore * 3),
+        };
+      })
+      .sort((left, right) => right.containerScore - left.containerScore || right.includeScore - left.includeScore || left.excludeScore - right.excludeScore || right.score - left.score);
+    const positiveMatches = ranked.filter((candidate) => candidate.includeScore > 0 || candidate.containerScore > 0);
+    if (positiveMatches.length) {
+      return positiveMatches.map((candidate) => candidate.element);
+    }
+
+    const neutralMatches = ranked.filter((candidate) => candidate.excludeScore === 0);
+    if (neutralMatches.length) {
+      return neutralMatches.map((candidate) => candidate.element);
+    }
+
+    return ranked.length === 1 ? [ranked[0].element] : [];
+  }
+
+  function findStepParameterSlider(root = findStepEditorRoot(), parameter) {
+    return getStepParameterSliderCandidates(root, parameter)[0] || null;
   }
 
   function isInsideVisibleDialog(element) {
@@ -1017,6 +1351,150 @@
       await sleep(150);
     }
     return null;
+  }
+
+  function textMatchesOptionLabel(text, label) {
+    const normalizedText = normalizeText(text).toLowerCase();
+    const normalizedLabel = normalizeText(label).toLowerCase();
+    if (!normalizedText || !normalizedLabel) {
+      return false;
+    }
+
+    if (normalizedText === normalizedLabel) {
+      return true;
+    }
+
+    return new RegExp(`(^|\\s|\\()${escapeRegExp(normalizedLabel)}($|\\s|\\)|,|\\.|:)`).test(normalizedText);
+  }
+
+  function findVisibleOptionByLabels(labels) {
+    const normalizedLabels = labels.map((label) => normalizeText(label).toLowerCase()).filter(Boolean);
+    if (!normalizedLabels.length) {
+      return null;
+    }
+
+    const options = uniqueElements(visibleElements("[role='option'], .v-list-item, .v-list-item__title"))
+      .map((element) => element.closest("[role='option'], .v-list-item") || element)
+      .filter((element) => isVisibleElement(element));
+
+    return options.find((element) => {
+      const optionText = normalizeText(element.textContent).toLowerCase();
+      return normalizedLabels.some((label) => textMatchesOptionLabel(optionText, label));
+    }) || options.find((element) => {
+      const optionText = normalizeText(element.textContent).toLowerCase();
+      return normalizedLabels.some((label) => optionText.includes(label));
+    }) || null;
+  }
+
+  function selectNativeOptionByLabels(selectElement, labels) {
+    if (!(selectElement instanceof HTMLSelectElement)) {
+      return false;
+    }
+
+    const option = Array.from(selectElement.options).find((candidate) => {
+      const optionText = normalizeText(candidate.label || candidate.text || candidate.value).toLowerCase();
+      return labels.some((label) => textMatchesOptionLabel(optionText, label) || optionText.includes(label));
+    });
+    if (!option) {
+      return false;
+    }
+
+    selectElement.value = option.value;
+    selectElement.dispatchEvent(new Event("input", { bubbles: true }));
+    selectElement.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  function getSelectLikeFieldTexts(field) {
+    if (!field) {
+      return [];
+    }
+
+    const slot = field.closest(".v-select__slot, .v-input__slot, .v-input, .v-select, .v-autocomplete, [role='combobox']");
+    return Array.from(new Set([
+      readSelectLikeFieldValue(field),
+      field.getAttribute?.("value"),
+      slot?.textContent,
+      slot?.querySelector?.("input[type='hidden']")?.value,
+      slot?.querySelector?.("input:not([type='hidden'])")?.value,
+    ].map((value) => normalizeText(value).toLowerCase()).filter(Boolean)));
+  }
+
+  function selectLikeFieldMatchesLabels(field, labels) {
+    if (!field) {
+      return false;
+    }
+
+    const normalizedLabels = labels.map((label) => normalizeText(label).toLowerCase()).filter(Boolean);
+    if (!normalizedLabels.length) {
+      return false;
+    }
+
+    const fieldTexts = getSelectLikeFieldTexts(field);
+    return normalizedLabels.some((label) => fieldTexts.some((text) => text.includes(label) || textMatchesOptionLabel(text, label)));
+  }
+
+  async function settleSelectLikeField(field) {
+    if (!field) {
+      return false;
+    }
+
+    const slot = field.closest(".v-select__slot, .v-input__slot, .v-input, .v-select, .v-autocomplete, [role='combobox']");
+    const targets = uniqueElements([
+      field,
+      slot,
+      slot?.querySelector?.("input[type='hidden']"),
+      slot?.querySelector?.("input:not([type='hidden'])"),
+    ]);
+
+    for (const target of targets) {
+      if (!(target instanceof Element)) {
+        continue;
+      }
+
+      target.dispatchEvent(new Event("input", { bubbles: true }));
+      target.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+
+    field.blur?.();
+    field.dispatchEvent(new Event("blur", { bubbles: true }));
+    await sleep(180);
+    return true;
+  }
+
+  async function setSelectLikeFieldOption(field, optionLabels) {
+    if (!field) {
+      return false;
+    }
+
+    const normalizedLabels = optionLabels.map((label) => normalizeText(label).toLowerCase()).filter(Boolean);
+    if (!normalizedLabels.length) {
+      return false;
+    }
+
+    if (selectNativeOptionByLabels(field, normalizedLabels)) {
+      return true;
+    }
+
+    const trigger = field.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input, .v-input__slot, .v-select__slot") || field;
+    clickElementRobust(trigger);
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const option = findVisibleOptionByLabels(normalizedLabels);
+      if (option) {
+        clickElementRobust(option);
+        await sleep(300);
+        const selectedValue = readSelectLikeFieldValue(field).toLowerCase();
+        if (!selectedValue || normalizedLabels.some((label) => selectedValue.includes(label) || textMatchesOptionLabel(selectedValue, label))) {
+          return true;
+        }
+        return true;
+      }
+      await sleep(150);
+    }
+
+    return false;
   }
 
   function readFieldValue(element) {
@@ -1132,7 +1610,7 @@
   }
 
   function buildStepTitle(step, index) {
-    const source = normalizeText(step?.description || "");
+    const source = normalizeText(step?.title || step?.description || "");
     const sentence = source.split(/[.!?]/)[0]?.trim();
     const compact = truncateText(sentence || source, 60);
     return compact || `Passaggio ${index + 1}`;
@@ -1172,6 +1650,1141 @@
       ],
       patterns: ["titolo", "title", "descrizione", "description", "passaggio", "step", "fase"],
     };
+  }
+
+  function findStepEditorRoot() {
+    const editorField = findField(stepEditorFieldConfig());
+    const dialogRoot = editorField?.closest?.(".v-dialog, .v-dialog__content, .v-overlay__content, .menuable__content__active, [role='dialog']");
+    if (dialogRoot) {
+      return dialogRoot;
+    }
+
+    return visibleElements(".v-dialog, .v-dialog__content, .v-overlay__content, .menuable__content__active, [role='dialog']")[0] || document.body;
+  }
+
+  function visibleElementsWithin(root, selector) {
+    if (!(root instanceof Element)) {
+      return visibleElements(selector);
+    }
+
+    return Array.from(root.querySelectorAll(selector)).filter((element) => isVisibleElement(element));
+  }
+
+  function findStepProgramActivator(root = findStepEditorRoot()) {
+    const switchInput = findStepProgramSwitchInput(root);
+    if (switchInput) {
+      return switchInput.closest("label, .v-input--selection-controls, .v-selection-control, .v-input, .v-input__slot") || switchInput;
+    }
+
+    const candidates = uniqueElements([
+      ...visibleElementsWithin(root, ".v-input--selection-controls__ripple"),
+      ...visibleElementsWithin(root, ".v-input--selection-controls"),
+      ...visibleElementsWithin(root, ".v-selection-control"),
+    ]);
+
+    return candidates[0] || null;
+  }
+
+  function findStepProgramSwitchInput(root = findStepEditorRoot()) {
+    return visibleElementsWithin(root, STEP_PROGRAM_SWITCH_SELECTOR)[0] || null;
+  }
+
+  function findStepProgramField(root = findStepEditorRoot()) {
+    const candidates = uniqueElements([
+      ...visibleElementsWithin(root, ".v-select__selections input[readonly]"),
+      ...visibleElementsWithin(root, ".v-select input[readonly]"),
+      ...visibleElementsWithin(root, "[role='combobox'] input[readonly]"),
+      ...visibleElementsWithin(root, "input[readonly][autocomplete='off']"),
+    ]).map((element) => ({
+      element,
+      score: ["programma", "program", "cooking program"].reduce(
+        (total, pattern) => total + Number(collectFieldText(element).includes(pattern)),
+        0,
+      ),
+    }));
+
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0]?.element || null;
+  }
+
+  function readSwitchCheckedState(input) {
+    if (!input) {
+      return false;
+    }
+
+    return Boolean(input.checked || input.getAttribute("aria-checked") === "true");
+  }
+
+  async function ensureSwitchState(input, expectedChecked) {
+    if (!input) {
+      return false;
+    }
+
+    const desiredState = Boolean(expectedChecked);
+    if (readSwitchCheckedState(input) === desiredState) {
+      return true;
+    }
+
+    const clickableTarget = input.closest("label, .v-input--selection-controls, .v-selection-control, .v-input, .v-input__slot") || input;
+    clickElementRobust(clickableTarget);
+    await sleep(250);
+    if (readSwitchCheckedState(input) === desiredState) {
+      return true;
+    }
+
+    clickElementRobust(input);
+    await sleep(250);
+    if (readSwitchCheckedState(input) === desiredState) {
+      return true;
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "checked")
+      || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
+    if (descriptor?.set) {
+      descriptor.set.call(input, desiredState);
+    } else {
+      input.checked = desiredState;
+    }
+    input.setAttribute("aria-checked", desiredState ? "true" : "false");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    await sleep(250);
+
+    return readSwitchCheckedState(input) === desiredState;
+  }
+
+  function findStepProgramOption(programLabel) {
+    return findVisibleOptionByLabels([programLabel]);
+  }
+
+  function parseStepSpeedValue(speed) {
+    const normalized = normalizeText(speed).toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    const aliases = new Map([
+      ["soft", "1"],
+      ["velocità soft", "1"],
+      ["velocita soft", "1"],
+      ["cucchiaio", "1"],
+      ["velocità cucchiaio", "1"],
+      ["velocita cucchiaio", "1"],
+    ]);
+    if (aliases.has(normalized)) {
+      return aliases.get(normalized);
+    }
+
+    const numericMatch = normalized.match(/(\d+(?:[.,]\d+)?)/);
+    if (!numericMatch) {
+      return null;
+    }
+
+    const parsed = Number(numericMatch[1].replace(",", "."));
+    if (!Number.isFinite(parsed)) {
+      return null;
+    }
+
+    const bounded = Math.min(10, Math.max(0, parsed));
+    return Number.isInteger(bounded) ? String(bounded) : String(Number(bounded.toFixed(1)));
+  }
+
+  function buildSpeedOptionLabels(speedValue) {
+    const normalized = normalizeText(speedValue);
+    if (!normalized) {
+      return [];
+    }
+
+    const commaVariant = normalized.replace(".", ",");
+    return Array.from(new Set([
+      normalized,
+      commaVariant,
+      `velocita ${normalized}`,
+      `velocita ${commaVariant}`,
+      `velocità ${normalized}`,
+      `velocità ${commaVariant}`,
+      `speed ${normalized}`,
+      `speed ${commaVariant}`,
+    ].map((value) => normalizeText(value).toLowerCase()).filter(Boolean)));
+  }
+
+  function resolveSpeedSliderTargets(speedValue) {
+    const parsed = Number(String(speedValue ?? "").replace(",", "."));
+    if (!Number.isFinite(parsed)) {
+      return [];
+    }
+
+    const bounded = Math.min(10, Math.max(0, parsed));
+    return Array.from(new Set([
+      bounded,
+      Math.round(bounded),
+      Math.floor(bounded),
+      Math.ceil(bounded),
+    ].filter((value) => Number.isFinite(value))));
+  }
+
+  function getStepTotalMinutes(durationSeconds) {
+    if (durationSeconds == null) {
+      return null;
+    }
+
+    return Math.max(1, Math.round(Number(durationSeconds) / 60));
+  }
+
+  function getStepDurationParts(durationSeconds) {
+    const totalMinutes = getStepTotalMinutes(durationSeconds);
+    if (totalMinutes == null) {
+      return null;
+    }
+
+    return {
+      hours: String(Math.floor(totalMinutes / 60)),
+      minutes: String(totalMinutes % 60),
+    };
+  }
+
+  function resolveTemperatureSliderIndex(temperatureC) {
+    if (temperatureC == null) {
+      return null;
+    }
+
+    const target = Number(temperatureC);
+    if (!Number.isFinite(target)) {
+      return null;
+    }
+
+    let bestIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    CUSTOM_COOKING_TEMPERATURE_STEPS.forEach((value, index) => {
+      const distance = Math.abs(value - target);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    return bestIndex;
+  }
+
+  function resolveCustomCookingTemperatureValue(temperatureC) {
+    const targetIndex = resolveTemperatureSliderIndex(temperatureC);
+    if (targetIndex == null) {
+      return null;
+    }
+
+    return CUSTOM_COOKING_TEMPERATURE_STEPS[targetIndex] ?? null;
+  }
+
+  function readSliderValue(slider) {
+    const rawValues = [
+      slider?.getAttribute?.("aria-valuenow"),
+      slider?.closest?.(".v-input, .v-slider")?.querySelector?.("input[type='hidden']")?.value,
+      slider?.closest?.(".v-input, .v-slider")?.querySelector?.("input:not([type='hidden'])")?.value,
+    ];
+    const parsedValues = rawValues
+      .map((raw) => Number(String(raw ?? "").replace(",", ".")))
+      .filter((value) => Number.isFinite(value));
+
+    if (!parsedValues.length) {
+      return null;
+    }
+
+    const firstValue = parsedValues[0];
+    const divergentValue = parsedValues.find((value) => value !== firstValue);
+    if (divergentValue != null) {
+      return parsedValues[parsedValues.length - 1];
+    }
+
+    return firstValue;
+  }
+
+  function getSliderBounds(slider) {
+    const rawMin = Number(slider?.getAttribute?.("aria-valuemin") || 0);
+    const rawMax = Number(slider?.getAttribute?.("aria-valuemax") || 20);
+    return {
+      min: Number.isFinite(rawMin) ? rawMin : 0,
+      max: Number.isFinite(rawMax) ? rawMax : 20,
+    };
+  }
+
+  function getKeyboardEventCode(key) {
+    const keyMap = {
+      ArrowLeft: 37,
+      ArrowUp: 38,
+      ArrowRight: 39,
+      ArrowDown: 40,
+      Home: 36,
+      End: 35,
+      PageUp: 33,
+      PageDown: 34,
+      Enter: 13,
+      Tab: 9,
+    };
+
+    return keyMap[key] || 0;
+  }
+
+  function createKeyboardEventWithCode(eventName, key, code) {
+    const keyCode = getKeyboardEventCode(key);
+    const event = new KeyboardEvent(eventName, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      key,
+      code,
+    });
+
+    for (const propertyName of ["keyCode", "which", "charCode"]) {
+      try {
+        Object.defineProperty(event, propertyName, {
+          get: () => keyCode,
+        });
+      } catch (error) {
+        // Ignore read-only event property failures.
+      }
+    }
+
+    return event;
+  }
+
+  function dispatchSliderKeyboardEvent(target, key, code) {
+    for (const eventName of ["keydown", "keyup"]) {
+      target.dispatchEvent(createKeyboardEventWithCode(eventName, key, code));
+    }
+  }
+
+  function findSliderTrack(slider) {
+    return slider?.closest?.(".v-slider")?.querySelector?.(".v-slider__track-container, .v-slider__track-background, .v-input__slot")
+      || slider?.parentElement
+      || slider;
+  }
+
+  function createPointerLikeMouseEvent(eventName, clientX, clientY, buttons = 1) {
+    return new MouseEvent(eventName, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      view: window,
+      clientX,
+      clientY,
+      screenX: window.screenX + clientX,
+      screenY: window.screenY + clientY,
+      button: 0,
+      buttons,
+      detail: eventName === "click" ? 1 : 0,
+    });
+  }
+
+  function dispatchMouseSequence(target, clientX, clientY) {
+    for (const currentTarget of uniqueElements([target, target?.closest?.("button, [role='button']") || null])) {
+      if (!currentTarget) {
+        continue;
+      }
+
+      try {
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mousedown", clientX, clientY, 1));
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mouseup", clientX, clientY, 0));
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("click", clientX, clientY, 0));
+      } catch (error) {
+        log("Interazione slider fallita", error);
+      }
+    }
+  }
+
+  function dragSliderToRatio(slider, ratio) {
+    const track = findSliderTrack(slider);
+    const sliderRoot = slider?.closest?.(".v-slider__container, .v-slider, .v-input__slider, .v-input") || track;
+    if (!track || !sliderRoot) {
+      return false;
+    }
+
+    const trackRect = track.getBoundingClientRect();
+    if (trackRect.width <= 0 || trackRect.height <= 0) {
+      return false;
+    }
+
+    const currentValue = readSliderValue(slider);
+    const { min, max } = getSliderBounds(slider);
+    const currentRatio = Number.isFinite(currentValue) && max !== min
+      ? (currentValue - min) / (max - min)
+      : 0;
+    const clampedCurrentRatio = Math.min(1, Math.max(0, currentRatio));
+    const clampedTargetRatio = Math.min(1, Math.max(0, ratio));
+    const startX = trackRect.left + (trackRect.width * clampedCurrentRatio);
+    const targetX = trackRect.left + (trackRect.width * clampedTargetRatio);
+    const clientY = trackRect.top + (trackRect.height / 2);
+    const interactionTargets = uniqueElements([sliderRoot, track, slider, window, document]);
+
+    sliderRoot.scrollIntoView?.({ block: "center", inline: "center" });
+
+    for (const currentTarget of interactionTargets) {
+      if (!currentTarget?.dispatchEvent) {
+        continue;
+      }
+
+      try {
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mousemove", startX, clientY, 0));
+      } catch (error) {
+        log("Preparazione drag slider fallita", error);
+      }
+    }
+
+    for (const currentTarget of interactionTargets) {
+      if (!currentTarget?.dispatchEvent) {
+        continue;
+      }
+
+      try {
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mousedown", startX, clientY, 1));
+      } catch (error) {
+        log("mousedown slider fallito", error);
+      }
+    }
+
+    const intermediateX = startX + ((targetX - startX) / 2);
+    for (const currentTarget of interactionTargets) {
+      if (!currentTarget?.dispatchEvent) {
+        continue;
+      }
+
+      try {
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mousemove", intermediateX, clientY, 1));
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mousemove", targetX, clientY, 1));
+      } catch (error) {
+        log("mousemove slider fallito", error);
+      }
+    }
+
+    for (const currentTarget of interactionTargets) {
+      if (!currentTarget?.dispatchEvent) {
+        continue;
+      }
+
+      try {
+        currentTarget.dispatchEvent(createPointerLikeMouseEvent("mouseup", targetX, clientY, 0));
+      } catch (error) {
+        log("mouseup slider fallito", error);
+      }
+    }
+
+    dispatchMouseSequence(track, targetX, clientY);
+    return true;
+  }
+
+  function collectVueInstances(element) {
+    const instances = [];
+    const seen = new Set();
+    let current = element instanceof Element ? element : null;
+
+    while (current) {
+      const maybeVue = current.__vue__;
+      if (maybeVue && !seen.has(maybeVue)) {
+        seen.add(maybeVue);
+        instances.push(maybeVue);
+      }
+      current = current.parentElement;
+    }
+
+    return instances;
+  }
+
+  async function trySetVueSliderValue(slider, targetValue) {
+    const candidateFields = ["lazyValue", "internalValue", "inputValue", "modelValue", "value"];
+
+    for (const vm of collectVueInstances(slider)) {
+      let touched = false;
+
+      for (const fieldName of candidateFields) {
+        if (!(fieldName in vm) || typeof vm[fieldName] === "function") {
+          continue;
+        }
+
+        try {
+          vm[fieldName] = targetValue;
+          touched = true;
+        } catch (error) {
+          // Ignore read-only Vue props.
+        }
+      }
+
+      for (const eventName of ["input", "change", "update:modelValue", "update:model-value", "end", "start"]) {
+        try {
+          vm.$emit?.(eventName, targetValue);
+        } catch (error) {
+          // Ignore emit failures on non-component objects.
+        }
+      }
+
+      try {
+        vm.$forceUpdate?.();
+      } catch (error) {
+        // Ignore forceUpdate failures.
+      }
+
+      if (!touched) {
+        continue;
+      }
+
+      await sleep(100);
+      if (readSliderValue(slider) === targetValue) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function clickSliderAtRatio(slider, ratio) {
+    const track = findSliderTrack(slider);
+    if (!track) {
+      return false;
+    }
+
+    const rect = track.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return false;
+    }
+
+    const clampedRatio = Math.min(1, Math.max(0, ratio));
+    const clientX = rect.left + (rect.width * clampedRatio);
+    const clientY = rect.top + (rect.height / 2);
+    track.scrollIntoView?.({ block: "center", inline: "center" });
+    dispatchMouseSequence(track, clientX, clientY);
+    if (track !== slider) {
+      dispatchMouseSequence(slider, clientX, clientY);
+    }
+    return true;
+  }
+
+  async function setSliderToIndex(slider, targetIndex) {
+    if (!slider || targetIndex == null) {
+      return false;
+    }
+
+    const { min, max } = getSliderBounds(slider);
+    const range = Math.max(1, max - min);
+    const boundedTarget = Math.min(max, Math.max(min, Number(targetIndex)));
+    let currentValue = readSliderValue(slider);
+    if (currentValue === boundedTarget) {
+      return true;
+    }
+
+    slider.scrollIntoView?.({ block: "center", inline: "center" });
+    slider.focus?.();
+
+    if (clickSliderAtRatio(slider, (boundedTarget - min) / range)) {
+      await sleep(180);
+      currentValue = readSliderValue(slider);
+      if (currentValue === boundedTarget) {
+        return true;
+      }
+    }
+
+    if (dragSliderToRatio(slider, (boundedTarget - min) / range)) {
+      await sleep(220);
+      currentValue = readSliderValue(slider);
+      if (currentValue === boundedTarget) {
+        return true;
+      }
+    }
+
+    const resetKey = boundedTarget === max ? "End" : "Home";
+    dispatchSliderKeyboardEvent(slider, resetKey, resetKey);
+    await sleep(120);
+
+    currentValue = readSliderValue(slider);
+    const directionKey = boundedTarget >= (currentValue ?? 0) ? "ArrowRight" : "ArrowLeft";
+    for (let stepIndex = 0; stepIndex < range + 3; stepIndex += 1) {
+      currentValue = readSliderValue(slider);
+      if (currentValue === boundedTarget) {
+        break;
+      }
+
+      dispatchSliderKeyboardEvent(slider, directionKey, directionKey);
+      await sleep(60);
+    }
+
+    currentValue = readSliderValue(slider);
+    if (currentValue !== boundedTarget) {
+      const sliderInput = slider.closest(".v-input, .v-slider")?.querySelector("input[type='hidden'], input:not([type='hidden'])") || null;
+      if (sliderInput) {
+        setNativeValue(sliderInput, String(boundedTarget));
+        sliderInput.dispatchEvent(new Event("input", { bubbles: true }));
+        sliderInput.dispatchEvent(new Event("change", { bubbles: true }));
+        await sleep(80);
+        currentValue = readSliderValue(slider);
+      }
+    }
+
+    if (currentValue !== boundedTarget && await trySetVueSliderValue(slider, boundedTarget)) {
+      currentValue = readSliderValue(slider);
+    }
+
+    return currentValue === boundedTarget;
+  }
+
+  function findStepTemperatureInput(root = findStepEditorRoot()) {
+    return selectBestElement([
+      ...visibleElementsWithin(root, "input[name*='temp' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='°' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='temperatura' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='temperatura' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='temp' i]"),
+      ...visibleElementsWithin(root, "input[type='number']"),
+      ...visibleElementsWithin(root, "input[inputmode='numeric']"),
+      ...visibleElementsWithin(root, "input[inputmode='decimal']"),
+    ], ["temperatura", "temp", "°"], ["tempo", "durata", "veloc", "speed"], {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    });
+  }
+
+  function findStepTemperatureSlider(root = findStepEditorRoot()) {
+    return findStepParameterSlider(root, "temperature");
+  }
+
+  async function setStepTemperatureField(step, root = findStepEditorRoot()) {
+    if (!step || step.temperatureC == null) {
+      return false;
+    }
+
+    const targetTemperature = resolveCustomCookingTemperatureValue(step.temperatureC) ?? Number(step.temperatureC);
+    const input = findStepTemperatureInput(root);
+    if (input) {
+      const normalizedTemperature = String(targetTemperature);
+      await commitTextInputLikeUser(input, normalizedTemperature);
+      await ensureFieldValue(input, normalizedTemperature, "Temperatura");
+      return true;
+    }
+
+    const slider = findStepTemperatureSlider(root);
+    if (!slider) {
+      return false;
+    }
+
+    const { max } = getSliderBounds(slider);
+    const targetIndex = resolveTemperatureSliderIndex(targetTemperature);
+    const candidateTargets = [];
+    if (max <= CUSTOM_COOKING_TEMPERATURE_STEPS.length && targetIndex != null) {
+      candidateTargets.push(targetIndex);
+    } else {
+      candidateTargets.push(targetTemperature);
+      if (targetIndex != null && !candidateTargets.includes(targetIndex)) {
+        candidateTargets.push(targetIndex);
+      }
+    }
+
+    for (const candidateTarget of candidateTargets) {
+      if (candidateTarget == null) {
+        continue;
+      }
+      if (await setSliderToIndex(slider, candidateTarget)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  function findStepSingleDurationField(root = findStepEditorRoot()) {
+    return selectBestElement([
+      ...visibleElementsWithin(root, "input[name*='time' i]"),
+      ...visibleElementsWithin(root, "input[name*='duration' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='min' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='minut' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='duration' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='tempo' i]"),
+    ], ["tempo", "durata", "minuti", "minutes", "minute", "min"], ["temperatura", "temp", "veloc", "speed"], {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    });
+  }
+
+  function findStepDurationFields(root = findStepEditorRoot()) {
+    const numericInputs = uniqueElements([
+      ...visibleElementsWithin(root, "input[type='number']"),
+      ...visibleElementsWithin(root, "input[inputmode='numeric']"),
+      ...visibleElementsWithin(root, "input[inputmode='decimal']"),
+    ]);
+
+    const hoursField = selectBestElement(numericInputs, ["ore", "hour", "hours"], ["temperatura", "temp", "veloc", "speed", "minuti", "minutes", "minute", "min"], {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    });
+    const minutesField = selectBestElement(numericInputs.filter((element) => element !== hoursField), ["minuti", "minutes", "minute", "min"], ["temperatura", "temp", "veloc", "speed", "ore", "hour", "hours"], {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    });
+
+    return {
+      directDurationField: findStepSingleDurationField(root),
+      hoursField,
+      minutesField,
+    };
+  }
+
+  async function setStepDurationFields(step, root = findStepEditorRoot()) {
+    const durationParts = getStepDurationParts(step?.durationSeconds);
+    if (!durationParts) {
+      return false;
+    }
+
+    const totalMinutes = getStepTotalMinutes(step?.durationSeconds);
+    const { directDurationField, hoursField, minutesField } = findStepDurationFields(root);
+    const hasSplitFields = hoursField && minutesField && hoursField !== minutesField;
+
+    if (hasSplitFields) {
+      await commitTextInputLikeUser(hoursField, durationParts.hours);
+      await ensureFieldValue(hoursField, durationParts.hours, "Ore");
+      await commitTextInputLikeUser(minutesField, durationParts.minutes);
+      await ensureFieldValue(minutesField, durationParts.minutes, "Minuti");
+      return true;
+    }
+
+    const singleDurationField = directDurationField || minutesField || hoursField;
+    if (!singleDurationField || totalMinutes == null) {
+      return false;
+    }
+
+    const normalizedDuration = String(totalMinutes);
+    await commitTextInputLikeUser(singleDurationField, normalizedDuration);
+    await ensureFieldValue(singleDurationField, normalizedDuration, "Durata");
+    return true;
+  }
+
+  function findStepRotationButton(root, reverse) {
+    const expectedValue = reverse ? "0" : "1";
+    const buttonByValue = visibleElementsWithin(root, `button[value='${expectedValue}'], [role='radio'][value='${expectedValue}']`)[0] || null;
+    if (buttonByValue) {
+      return buttonByValue;
+    }
+
+    const directionPattern = reverse
+      ? /\b(?:antiorario|reverse|counter(?:clockwise)?)\b/
+      : /\b(?:orario|clockwise)\b/;
+
+    return uniqueElements(
+      visibleElementsWithin(root, "label, button, [role='button'], [role='radio'], .v-input--selection-controls, .v-selection-control, .v-radio")
+        .map((element) => element.closest("label, button, [role='button'], [role='radio'], .v-input--selection-controls, .v-selection-control, .v-radio") || element)
+    ).find((element) => directionPattern.test(normalizeText([
+      element.textContent,
+      collectFieldText(element),
+      element.className,
+      element.querySelector?.("i")?.className,
+    ].filter(Boolean).join(" ")).toLowerCase())) || null;
+  }
+
+  function findStepRotationInput(root, reverse) {
+    const directionPattern = reverse
+      ? /antiorario|reverse|counter|clockwise-?left|rotate-left|mdi-rotate-left|mdi-undo/
+      : /orario|clockwise|clockwise-?right|rotate-right|mdi-rotate-right|mdi-redo/;
+    const expectedValuePattern = reverse
+      ? /^(?:0|false|reverse|counter|antiorario)$/
+      : /^(?:1|true|clockwise|orario)$/;
+
+    return Array.from(root.querySelectorAll("input[type='radio'], input[type='checkbox']"))
+      .map((element) => ({
+        element,
+        signature: normalizeText([
+          element.getAttribute("name"),
+          element.getAttribute("id"),
+          element.getAttribute("value"),
+          element.getAttribute("aria-label"),
+          collectScopedFieldText(element),
+          element.closest("label, .v-radio, .v-selection-control, .v-input--selection-controls, .v-input")?.textContent,
+          element.closest("label, .v-radio, .v-selection-control, .v-input--selection-controls, .v-input")?.className,
+        ].filter(Boolean).join(" ")).toLowerCase(),
+      }))
+      .filter((candidate) => /reverse|clock|direction|rotation|rotazione|senso|orario|antiorario|counter|mdi-rotate|mdi-undo|mdi-redo/.test(candidate.signature))
+      .sort((left, right) => Number(expectedValuePattern.test(right.signature)) - Number(expectedValuePattern.test(left.signature)) || Number(directionPattern.test(right.signature)) - Number(directionPattern.test(left.signature)))
+      .find((candidate) => expectedValuePattern.test(candidate.signature) || directionPattern.test(candidate.signature))?.element || null;
+  }
+
+  function findStepReverseToggle(root = findStepEditorRoot()) {
+    return visibleElementsWithin(root, "input[name*='reverse'], input[type='checkbox'][name*='clock'], input[id*='reverse'], input[id*='clock']")[0] || null;
+  }
+
+  function readCheckedState(input) {
+    if (!input) {
+      return false;
+    }
+
+    return Boolean(input.checked || input.getAttribute("aria-checked") === "true");
+  }
+
+  async function ensureCheckedState(input, expectedChecked) {
+    if (!input) {
+      return false;
+    }
+
+    const desiredState = Boolean(expectedChecked);
+    if (readCheckedState(input) === desiredState) {
+      return true;
+    }
+
+    const fallbackTarget = input.id && window.CSS?.escape
+      ? document.querySelector(`label[for="${window.CSS.escape(input.id)}"]`)
+      : null;
+    const clickableTarget = input.closest("label, .v-radio, .v-selection-control, .v-input--selection-controls, .v-input, [role='radio'], [role='button']") || fallbackTarget || input;
+    clickElementRobust(clickableTarget);
+    await sleep(250);
+    if (readCheckedState(input) === desiredState) {
+      return true;
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "checked")
+      || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
+    if (descriptor?.set) {
+      descriptor.set.call(input, desiredState);
+    } else {
+      input.checked = desiredState;
+    }
+    input.setAttribute("aria-checked", desiredState ? "true" : "false");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, composed: true }));
+    await sleep(250);
+
+    return readCheckedState(input) === desiredState;
+  }
+
+  function findStepSpeedField(root = findStepEditorRoot()) {
+    return selectBestElement([
+      ...visibleElementsWithin(root, "select[name*='speed' i]"),
+      ...visibleElementsWithin(root, "input[name*='speed' i]"),
+      ...visibleElementsWithin(root, "input[placeholder*='veloc' i]"),
+      ...visibleElementsWithin(root, "input[aria-label*='veloc' i]"),
+      ...visibleElementsWithin(root, "input[readonly][autocomplete='off']"),
+      ...visibleElementsWithin(root, "input[readonly][disabled]"),
+      ...visibleElementsWithin(root, "input[disabled][readonly]"),
+      ...visibleElementsWithin(root, "input[readonly]"),
+      ...visibleElementsWithin(root, "[role='combobox'] input"),
+    ], ["veloc", "speed"], ["programma", "program", "temperatura", "temp", "tempo", "durata"], {
+      textExtractor: collectScopedFieldText,
+      requireIncludeMatch: true,
+    });
+  }
+
+  function findStepSpeedSlider(root = findStepEditorRoot()) {
+    return findStepParameterSlider(root, "speed");
+  }
+
+  async function setStepSpeedField(step, root = findStepEditorRoot()) {
+    const normalizedSpeed = parseStepSpeedValue(step?.speed);
+    if (!normalizedSpeed) {
+      return false;
+    }
+
+    const speedField = findStepSpeedField(root);
+    if (speedField) {
+      const speedLabels = buildSpeedOptionLabels(normalizedSpeed);
+      if (selectNativeOptionByLabels(speedField, speedLabels)) {
+        return true;
+      }
+
+      const looksSelectLike = speedField.matches?.("select")
+        || speedField.hasAttribute("readonly")
+        || speedField.hasAttribute("disabled")
+        || Boolean(speedField.closest("[role='combobox'], .v-select, .v-autocomplete"));
+
+      if (looksSelectLike) {
+        return await setSelectLikeFieldOption(speedField, speedLabels);
+      }
+
+      const hadDisabled = speedField.hasAttribute("disabled");
+      const hadReadonly = speedField.hasAttribute("readonly");
+      const previousTabIndex = speedField.getAttribute("tabindex");
+
+      if (hadDisabled) {
+        speedField.removeAttribute("disabled");
+      }
+      if (hadReadonly) {
+        speedField.removeAttribute("readonly");
+      }
+      speedField.setAttribute("tabindex", "0");
+
+      await commitTextInputLikeUser(speedField, normalizedSpeed);
+      await ensureFieldValue(speedField, normalizedSpeed, "Velocita");
+
+      if (hadReadonly) {
+        speedField.setAttribute("readonly", "readonly");
+      }
+      if (hadDisabled) {
+        speedField.setAttribute("disabled", "disabled");
+      }
+      if (previousTabIndex == null) {
+        speedField.removeAttribute("tabindex");
+      } else {
+        speedField.setAttribute("tabindex", previousTabIndex);
+      }
+      return true;
+    }
+
+    const speedSlider = findStepSpeedSlider(root);
+    if (!speedSlider) {
+      return false;
+    }
+
+    for (const sliderTarget of resolveSpeedSliderTargets(normalizedSpeed)) {
+      if (await setSliderToIndex(speedSlider, sliderTarget)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  async function ensureStepProgramSelection(step, index) {
+    if (!stepHasTechnicalPayload(step)) {
+      return false;
+    }
+
+    const root = findStepEditorRoot();
+    let programField = findStepProgramField(root);
+    if (!programField) {
+      const switchInput = findStepProgramSwitchInput(root);
+      if (switchInput) {
+        const switchEnabled = await ensureSwitchState(switchInput, true);
+        if (!switchEnabled) {
+          throw new Error(`Interruttore programma non attivabile per lo step ${index + 1}. Campi visibili:\n${debugVisibleFields()}`);
+        }
+      } else {
+        const activator = findStepProgramActivator(root);
+        if (!activator) {
+          throw new Error(`Selettore programma non trovato per lo step ${index + 1}. Campi visibili:\n${debugVisibleFields()}`);
+        }
+
+        clickElementRobust(activator);
+      }
+
+      const fieldDeadline = Date.now() + 4000;
+      while (Date.now() < fieldDeadline) {
+        await sleep(150);
+        programField = findStepProgramField(root);
+        if (programField) {
+          break;
+        }
+      }
+    }
+
+    if (!programField) {
+      const activator = findStepProgramActivator(root);
+      if (!activator) {
+        throw new Error(`Selettore programma non trovato per lo step ${index + 1}. Campi visibili:\n${debugVisibleFields()}`);
+      }
+      clickElementRobust(activator);
+      await sleep(250);
+      programField = findStepProgramField(root);
+      if (!programField) {
+        throw new Error(`Campo programma non trovato per lo step ${index + 1}. Campi visibili:\n${debugVisibleFields()}`);
+      }
+    }
+
+    const selectedProgram = step.selectedProgram || CUSTOM_COOKING_PROGRAM_LABEL;
+
+    if (await setSelectLikeFieldOption(programField, [selectedProgram])) {
+      if (normalizeText(selectedProgram).toLowerCase() === CUSTOM_COOKING_PROGRAM_LABEL.toLowerCase()) {
+        await sleep(350);
+        await waitForCustomCookingControls(step, 9000);
+      }
+      return true;
+    }
+
+    throw new Error(`Opzione programma '${selectedProgram}' non trovata per lo step ${index + 1}. Bottoni visibili:\n${debugVisibleButtons()}`);
+  }
+
+  async function setStepReverseDirection(step, root = findStepEditorRoot()) {
+    if (!step || step.isDescriptive) {
+      return false;
+    }
+
+    const rotationInput = findStepRotationInput(root, Boolean(step.reverse));
+    if (rotationInput) {
+      const targetState = rotationInput.type === "checkbox" ? Boolean(step.reverse) : true;
+      if (await ensureCheckedState(rotationInput, targetState)) {
+        return true;
+      }
+    }
+
+    const rotationButton = findStepRotationButton(root, Boolean(step.reverse));
+    if (rotationButton) {
+      clickElementRobust(rotationButton);
+      await sleep(150);
+      return true;
+    }
+
+    const directToggle = findStepReverseToggle(root);
+    if (directToggle) {
+      const shouldBeChecked = Boolean(step.reverse);
+      if (Boolean(directToggle.checked) !== shouldBeChecked) {
+        clickElementRobust(directToggle.closest("label, .v-input--selection-controls, .v-selection-control, .v-input") || directToggle);
+        await sleep(150);
+      }
+      return Boolean(directToggle.checked) === shouldBeChecked || !shouldBeChecked;
+    }
+
+    if (!step.reverse) {
+      return true;
+    }
+
+    const reverseCandidate = uniqueElements(
+      visibleElementsWithin(root, "label, button, [role='button'], [role='radio'], .v-input--selection-controls, .v-selection-control, .v-radio")
+        .map((element) => element.closest("label, button, [role='button'], [role='radio'], .v-input--selection-controls, .v-selection-control, .v-radio") || element)
+    ).find((element) => /antiorario|counter|reverse/.test(normalizeText(element.textContent || collectFieldText(element)).toLowerCase()));
+
+    if (reverseCandidate) {
+      clickElementRobust(reverseCandidate);
+      await sleep(150);
+      return true;
+    }
+
+    return false;
+  }
+
+  function hasRequiredCustomCookingControls(step, root) {
+    return describeMissingCustomCookingControls(step, root).length === 0;
+  }
+
+  function describeMissingCustomCookingControls(step, root) {
+    const requiresTemperature = step?.temperatureC != null;
+    const requiresDuration = step?.durationSeconds != null;
+    const requiresSpeed = Boolean(normalizeText(step?.speed || ""));
+    const requiresReverse = Boolean(step?.reverse);
+    const { directDurationField, hoursField, minutesField } = findStepDurationFields(root);
+    const missing = [];
+
+    const durationReady = !requiresDuration || Boolean(
+      directDurationField
+      || (hoursField && minutesField)
+      || minutesField
+      || hoursField
+    );
+    const temperatureReady = !requiresTemperature || Boolean(findStepTemperatureInput(root) || findStepTemperatureSlider(root));
+    const speedReady = !requiresSpeed || Boolean(findStepSpeedField(root) || findStepSpeedSlider(root));
+    const reverseReady = !requiresReverse || Boolean(
+      findStepRotationInput(root, true)
+      || findStepRotationButton(root, true)
+      || findStepReverseToggle(root)
+    );
+
+    if (!temperatureReady) {
+      missing.push("temperatura");
+    }
+    if (!durationReady) {
+      missing.push("tempo");
+    }
+    if (!speedReady) {
+      missing.push("velocita");
+    }
+    if (!reverseReady) {
+      missing.push("senso di rotazione");
+    }
+
+    return missing;
+  }
+
+  async function waitForCustomCookingControls(step, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const root = findStepEditorRoot();
+      if (hasRequiredCustomCookingControls(step, root)) {
+        return root;
+      }
+      await sleep(150);
+    }
+
+    return findStepEditorRoot();
+  }
+
+  async function recoverCustomCookingControls(step, programField) {
+    const selectedProgram = step?.selectedProgram || CUSTOM_COOKING_PROGRAM_LABEL;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const root = await waitForCustomCookingControls(step, 2500 + (attempt * 1500));
+      if (hasRequiredCustomCookingControls(step, root)) {
+        return root;
+      }
+
+      const liveProgramField = findStepProgramField(findStepEditorRoot()) || programField;
+      if (liveProgramField) {
+        await settleSelectLikeField(liveProgramField);
+      }
+
+      const settledRoot = findStepEditorRoot();
+      if (hasRequiredCustomCookingControls(step, settledRoot)) {
+        return settledRoot;
+      }
+
+      if (liveProgramField && await setSelectLikeFieldOption(liveProgramField, [selectedProgram])) {
+        await sleep(500);
+        const refreshedRoot = findStepEditorRoot();
+        if (hasRequiredCustomCookingControls(step, refreshedRoot)) {
+          return refreshedRoot;
+        }
+      }
+    }
+
+    const switchInput = findStepProgramSwitchInput(findStepEditorRoot());
+    if (switchInput && readSwitchCheckedState(switchInput)) {
+      const switchDisabled = await ensureSwitchState(switchInput, false);
+      if (switchDisabled) {
+        await sleep(450);
+        const switchedRoot = findStepEditorRoot();
+        if (hasRequiredCustomCookingControls(step, switchedRoot)) {
+          return switchedRoot;
+        }
+      }
+
+      await ensureSwitchState(switchInput, true);
+      await sleep(300);
+
+      const restoredProgramField = findStepProgramField(findStepEditorRoot()) || programField;
+      if (restoredProgramField && await setSelectLikeFieldOption(restoredProgramField, [selectedProgram])) {
+        await sleep(500);
+        const restoredRoot = findStepEditorRoot();
+        if (hasRequiredCustomCookingControls(step, restoredRoot)) {
+          return restoredRoot;
+        }
+      }
+    }
+
+    return findStepEditorRoot();
+  }
+
+  async function tryApplyCustomCookingConfiguration(step, root) {
+    const failures = [];
+
+    if (step.temperatureC != null && !await setStepTemperatureField(step, root)) {
+      failures.push("temperatura");
+    }
+    if (step.durationSeconds != null && !await setStepDurationFields(step, root)) {
+      failures.push("tempo");
+    }
+    if (normalizeText(step.speed || "") && !await setStepSpeedField(step, root)) {
+      failures.push("velocita");
+    }
+    if (!await setStepReverseDirection(step, root) && step.reverse) {
+      failures.push("senso di rotazione");
+    }
+
+    return failures;
+  }
+
+  async function applyCustomCookingConfiguration(step, index) {
+    let root = await waitForCustomCookingControls(step, 15000);
+    let failures = await tryApplyCustomCookingConfiguration(step, root);
+
+    if (failures.length) {
+      await sleep(1500);
+      root = await waitForCustomCookingControls(step, 7000);
+      failures = await tryApplyCustomCookingConfiguration(step, root);
+    }
+
+    if (failures.length) {
+      throw new Error(`Impossibile impostare ${failures.join(", ")} per lo step ${index + 1}.\n\nDiagnostica controlli custom:\n${debugCustomCookingControls(root)}\n\nCampi visibili:\n${debugVisibleFields(12)}\n\nBottoni visibili:\n${debugVisibleButtons(16)}`);
+    }
+
+    return true;
   }
 
   function collectStepButtonText(element) {
@@ -1370,70 +2983,34 @@
       await sleep(120);
     }
 
-    const descriptionField = await waitForField({
-      selectors: [
-        "textarea[name*='description']",
-        "textarea[placeholder*='descrizione' i]",
-        "textarea[placeholder*='description' i]",
-        "textarea[placeholder*='Sbucciare le cipolle' i]",
-        "textarea",
-        "[role='textbox']",
-        "[contenteditable='true']",
-      ],
-      patterns: ["descrizione", "description", "istruzioni", "passaggio", "step", "fase", "sbucciare le cipolle"],
-    }, 5000);
-    if (!descriptionField) {
-      throw new Error(`Campo descrizione step non trovato per lo step ${index + 1}.`);
-    }
-    descriptionField.scrollIntoView?.({ block: "center", inline: "center" });
-    await commitTextInputLikeUser(descriptionField, step.description);
-    await ensureFieldValue(descriptionField, step.description, "Descrizione");
-    await sleep(200);
-
-    const minutes = step.durationSeconds ? String(Math.max(1, Math.round(step.durationSeconds / 60))) : null;
-    if (minutes) {
-      const durationField = findField({
-        selectors: [
-          "input[name*='time']",
-          "input[name*='duration']",
-          "input[placeholder*='min' i]",
-        ],
-        patterns: ["min", "tempo", "duration", "durata"],
-      });
-      if (durationField) {
-        durationField.focus();
-        setNativeValue(durationField, minutes);
-      }
+    if (stepHasTechnicalPayload(step)) {
+      await ensureStepProgramSelection(step, index);
     }
 
-    if (step.temperatureC) {
-      const temperatureField = findField({
+    if (!step.isTechnicalOnly) {
+      const descriptionField = await waitForField({
         selectors: [
-          "input[name*='temp']",
-          "input[placeholder*='temperatura' i]",
-          "input[placeholder*='°' i]",
+          "textarea[name*='description']",
+          "textarea[placeholder*='descrizione' i]",
+          "textarea[placeholder*='description' i]",
+          "textarea[placeholder*='Sbucciare le cipolle' i]",
+          "textarea",
+          "[role='textbox']",
+          "[contenteditable='true']",
         ],
-        patterns: ["temperatura", "temp", "°"],
-      });
-      if (temperatureField) {
-        temperatureField.focus();
-        setNativeValue(temperatureField, String(step.temperatureC));
+        patterns: ["descrizione", "description", "istruzioni", "passaggio", "step", "fase", "sbucciare le cipolle"],
+      }, 5000);
+      if (!descriptionField) {
+        throw new Error(`Campo descrizione step non trovato per lo step ${index + 1}.`);
       }
+      descriptionField.scrollIntoView?.({ block: "center", inline: "center" });
+      await commitTextInputLikeUser(descriptionField, step.description);
+      await ensureFieldValue(descriptionField, step.description, "Descrizione");
+      await sleep(200);
     }
 
-    if (step.speed) {
-      const speedField = findField({
-        selectors: [
-          "input[name*='speed']",
-          "select[name*='speed']",
-          "input[placeholder*='veloc' i]",
-        ],
-        patterns: ["veloc", "speed"],
-      });
-      if (speedField) {
-        speedField.focus?.();
-        setNativeValue(speedField, String(step.speed));
-      }
+    if (stepHasTechnicalPayload(step) && isCustomCookingProgram(step)) {
+      await applyCustomCookingConfiguration(step, index);
     }
 
     await saveStepEditor();
@@ -1939,6 +3516,16 @@
   async function initMonsieurCuisineBridge() {
     let panel = null;
 
+    const showCopyableError = (message) => {
+      const normalizedMessage = String(message || "Errore sconosciuto");
+      try {
+        window.prompt("Compilazione non riuscita. Copia il messaggio:", normalizedMessage);
+      } catch (promptError) {
+        log("Prompt errore non disponibile", promptError);
+        window.alert(`Compilazione non riuscita: ${normalizedMessage}`);
+      }
+    };
+
     const renderPanel = async () => {
       panel?.remove();
 
@@ -1969,7 +3556,8 @@
               history.replaceState(null, document.title, window.location.pathname + window.location.search);
             }
           } catch (error) {
-            window.alert(`Compilazione non riuscita: ${error.message}`);
+            log("Compilazione non riuscita", error);
+            showCopyableError(error?.message || error);
           }
         },
         () => panel?.remove()

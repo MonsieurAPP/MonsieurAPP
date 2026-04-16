@@ -138,6 +138,28 @@
 
       <div class="info-box">
         <div class="row-between">
+          <h2 class="label">Portale Monsieur Cuisine</h2>
+          {% if job.confirmed_at %}
+            <a class="button button-secondary" href="https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart#mc-import={{ job.id }}" target="_blank" rel="noreferrer">Apri con Tampermonkey</a>
+          {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
+            <span class="button button-secondary button-disabled">Bloccato: AI non disponibile</span>
+          {% else %}
+            <span class="button button-secondary button-disabled">Conferma prima la ricetta</span>
+          {% endif %}
+        </div>
+        <div class="job-text" style="margin-top: 0;">
+          {% if job.confirmed_at %}
+            Apri Monsieur Cuisine dal bottone qui sopra: lo userscript recuperera' dalla nostra app il job {{ job.id[:8] }} confermato con la versione selezionata e compilera' il form partendo dal payload finale.
+          {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
+            Il passaggio verso Monsieur Cuisine e' bloccato finche' l'adattamento AI reale non torna disponibile e il job non viene rigenerato con successo.
+          {% else %}
+            Dopo la conferma finale comparira' il passaggio verso Monsieur Cuisine, da cui Tampermonkey potra' leggere la ricetta confermata.
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="info-box">
+        <div class="row-between">
           <h2 class="label">Prompt AI Monsieur Cuisine</h2>
           <div class="status-pill status-completed">persistente</div>
         </div>
@@ -297,27 +319,6 @@ Programma/Parametri: {{ step.parameters_summary or '-' }}
       {% endif %}
     {% endif %}
 
-    <div class="info-box">
-      <div class="row-between">
-        <h2 class="label">Portale Monsieur Cuisine</h2>
-        {% if job.confirmed_at %}
-          <a class="button button-secondary" href="https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart#mc-import={{ job.id }}" target="_blank" rel="noreferrer">Apri con Tampermonkey</a>
-        {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
-          <span class="button button-secondary button-disabled">Bloccato: AI non disponibile</span>
-        {% else %}
-          <span class="button button-secondary button-disabled">Conferma prima la ricetta</span>
-        {% endif %}
-      </div>
-      <div class="job-text" style="margin-top: 0;">
-        {% if job.confirmed_at %}
-          Apri Monsieur Cuisine dal bottone qui sopra: lo userscript recuperera' dalla nostra app il job {{ job.id[:8] }} confermato con la versione selezionata e compilera' il form partendo dal payload finale.
-        {% elif job.adaptation and job.adaptation.mode != 'ai-live' %}
-          Il passaggio verso Monsieur Cuisine e' bloccato finche' l'adattamento AI reale non torna disponibile e il job non viene rigenerato con successo.
-        {% else %}
-          Dopo la conferma finale comparira' il passaggio verso Monsieur Cuisine, da cui Tampermonkey potra' leggere la ricetta confermata.
-        {% endif %}
-      </div>
-    </div>
   {% endif %}
 
   {% if job.error %}
