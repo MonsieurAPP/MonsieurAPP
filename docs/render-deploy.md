@@ -7,6 +7,7 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 - usa `render.yaml` per creare un web service Docker;
 - imposta un `dockerCommand` esplicito che avvia Uvicorn su `0.0.0.0:$PORT`, evitando dipendenze dal launcher locale;
 - espone health check su `/health`;
+- l'endpoint `/health` restituisce anche metadati operativi (`timestamp`, `uptime`, `service`) oltre ai flag AI;
 - mantiene `numInstances: 1` perche' i job sono in memoria e non sono condivisi tra istanze;
 - monta un disco persistente su `/app/persisted-data` per conservare il prompt template personalizzato tra restart e deploy;
 - chiede in fase di creazione le variabili `AI_API_KEY`, `AI_MODEL` e `AI_BASE_URL`.

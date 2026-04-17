@@ -6,6 +6,7 @@ import math
 import json
 import os
 import re
+import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
 LOGGER = logging.getLogger("monsieur_app.web")
+APP_STARTED_AT = datetime.now(timezone.utc)
+APP_STARTED_MONOTONIC = time.monotonic()
 
 
 def first_forwarded_header_value(value: str | None) -> str | None:
@@ -1266,8 +1269,13 @@ async def job_status_partial(request: Request, job_id: str) -> HTMLResponse:
 
 @app.get("/health/uptime")
 @app.get("/healthz")
-async def uptime_healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+async def uptime_healthcheck() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "uptime": round(time.monotonic() - APP_STARTED_MONOTONIC, 3),
+        "service": "MonsieurAPP API",
+    }
 
 
 @app.get("/health")
@@ -1277,6 +1285,10 @@ async def healthcheck() -> dict[str, object]:
     configured_base_url = str(ai_settings["base_url"]).rstrip("/")
     return {
         "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "uptime": round(time.monotonic() - APP_STARTED_MONOTONIC, 3),
+        "started_at": APP_STARTED_AT.isoformat(),
+        "service": "MonsieurAPP API",
         "ai_enabled": bool(ai_settings["enabled"]),
         "ai_configured": is_live_ai_configured(),
         "ai_has_api_key": bool(ai_settings["api_key"]),
