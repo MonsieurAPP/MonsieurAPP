@@ -828,6 +828,32 @@ def has_live_ai_adaptation(job) -> bool:
     return bool(job and job.adaptation and job.adaptation.mode == "ai-live")
 
 
+AUTO_CONFIRMED_URL_IMPORT_MESSAGE = "Ricetta importata e confermata automaticamente. Pronta per Tampermonkey su Monsieur Cuisine"
+
+
+def should_auto_confirm_url_job(job) -> bool:
+    return bool(
+        job
+        and getattr(job, "creation_source", None) == "url"
+        and job.confirmed_at is None
+        and job.status in {"completed", "awaiting_review"}
+        and has_live_ai_adaptation(job)
+    )
+
+
+async def auto_confirm_url_job_if_needed(job):
+    if not should_auto_confirm_url_job(job):
+        return job
+
+    await job_store.update(
+        job.id,
+        status="completed",
+        confirmed_at=datetime.now(timezone.utc),
+        message=AUTO_CONFIRMED_URL_IMPORT_MESSAGE,
+    )
+    return await job_store.get(job.id)
+
+
 def build_ai_unavailable_error(adaptation) -> str:
     if not adaptation:
         return "L'adattamento AI non e' disponibile."
@@ -994,16 +1020,13 @@ async def run_extract_job(job_id: str, recipe_url: str, desired_servings: int | 
                 error=build_ai_unavailable_error(adaptation),
             )
             return
-        final_status = "awaiting_review"
-        if adaptation.mode == "ai-live":
-            final_message = "Ricetta estratta. Proposta AI pronta per la revisione"
-        else:
-            final_message = "Ricetta estratta. Bozza di adattamento pronta per la revisione"
+        confirmed_at = datetime.now(timezone.utc)
         await job_store.update(
             job_id,
-            status=final_status,
-            message=final_message,
+            status="completed",
+            message=AUTO_CONFIRMED_URL_IMPORT_MESSAGE,
             selected_review_mode=preferred_review_mode(adaptation),
+            confirmed_at=confirmed_at,
             source_servings=source_servings,
             scaling_factor=scaling_factor,
             recipe_data=recipe,
@@ -1063,7 +1086,7 @@ async def create_import(
     recipe_url: str = Form(...),
     desired_servings: int | None = Form(default=None),
 ) -> HTMLResponse:
-    job = await job_store.create(recipe_url, desired_servings=desired_servings)
+    job = await job_store.create(recipe_url, desired_servings=desired_servings, creation_source="url")
     asyncio.create_task(run_extract_job(job.id, recipe_url, desired_servings))
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
 
@@ -1086,6 +1109,7 @@ async def create_import_from_description(
     job = await job_store.create(
         summarize_payload_generation_request(normalized_description, desired_servings=desired_servings),
         desired_servings=desired_servings,
+        creation_source="ai-description",
     )
     asyncio.create_task(run_generate_payload_job(job.id, normalized_description, desired_servings))
     return RedirectResponse(url=f"/imports/{job.id}", status_code=303)
@@ -1107,7 +1131,11 @@ async def create_import_from_payload(
             payload_description_servings_value="",
         )
 
-    job = await job_store.create("Payload manuale incollato", desired_servings=desired_servings)
+    job = await job_store.create(
+        "Payload manuale incollato",
+        desired_servings=desired_servings,
+        creation_source="manual-payload",
+    )
     await finalize_manual_payload_job(
         job.id,
         normalized_payload=normalized_payload,
@@ -1126,7 +1154,7 @@ async def create_import_api(
     recipe_url: str = Form(...),
     desired_servings: int | None = Form(default=None),
 ) -> dict[str, object]:
-    job = await job_store.create(recipe_url, desired_servings=desired_servings)
+    job = await job_store.create(recipe_url, desired_servings=desired_servings, creation_source="url")
     asyncio.create_task(run_extract_job(job.id, recipe_url, desired_servings))
     return {
         "jobId": job.id,
@@ -1142,11 +1170,15 @@ async def import_detail(request: Request, job_id: str) -> HTMLResponse:
     job = await job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job non trovato")
+    job = await auto_confirm_url_job_if_needed(job)
     return templates.TemplateResponse(request, "import_detail.html", build_job_template_context(job))
 
 
 @app.get("/api/imports/latest-confirmed")
 async def get_latest_confirmed_import_api(request: Request) -> dict[str, object]:
+    for recent_job in await job_store.list_recent(limit=50):
+        await auto_confirm_url_job_if_needed(recent_job)
+
     job = await job_store.latest_confirmed()
     if not job:
         raise HTTPException(status_code=404, detail="Nessuna ricetta confermata disponibile")
@@ -1166,6 +1198,7 @@ async def get_import_api_status(request: Request, job_id: str) -> dict[str, obje
     job = await job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job non trovato")
+    job = await auto_confirm_url_job_if_needed(job)
 
     return {
         "jobId": job.id,
@@ -1184,6 +1217,7 @@ async def export_import_api(job_id: str, mode: str = "selected") -> dict[str, ob
     job = await job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job non trovato")
+    job = await auto_confirm_url_job_if_needed(job)
     if job.status not in {"completed", "awaiting_review"}:
         raise HTTPException(status_code=409, detail="Job non ancora pronto per l'export")
     if not is_manual_payload_job(job) and not has_live_ai_adaptation(job):
@@ -1264,6 +1298,7 @@ async def job_status_partial(request: Request, job_id: str) -> HTMLResponse:
     job = await job_store.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job non trovato")
+    job = await auto_confirm_url_job_if_needed(job)
     return templates.TemplateResponse(request, "partials/job_status.html", build_job_template_context(job))
 
 

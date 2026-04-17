@@ -11,6 +11,7 @@ from app.models import RecipeAdaptation, RecipeData
 class ImportJob:
     id: str
     recipe_url: str
+    creation_source: str = "url"
     desired_servings: Optional[int] = None
     status: str = "queued"
     message: str = "In coda per l'estrazione"
@@ -43,9 +44,19 @@ class InMemoryJobStore:
         self._jobs: dict[str, ImportJob] = {}
         self._lock = asyncio.Lock()
 
-    async def create(self, recipe_url: str, desired_servings: Optional[int] = None) -> ImportJob:
+    async def create(
+        self,
+        recipe_url: str,
+        desired_servings: Optional[int] = None,
+        creation_source: str = "url",
+    ) -> ImportJob:
         async with self._lock:
-            job = ImportJob(id=str(uuid.uuid4()), recipe_url=recipe_url, desired_servings=desired_servings)
+            job = ImportJob(
+                id=str(uuid.uuid4()),
+                recipe_url=recipe_url,
+                creation_source=creation_source,
+                desired_servings=desired_servings,
+            )
             self._jobs[job.id] = job
             return job
 

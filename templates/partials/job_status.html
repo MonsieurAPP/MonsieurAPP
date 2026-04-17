@@ -57,7 +57,7 @@
 
   {% if job.adaptation and job.adaptation.mode != 'ai-live' %}
     <div class="alert alert-danger">
-      Adattamento AI non disponibile. Non puoi confermare la ricetta, esportarla o proseguire verso Monsieur Cuisine finche' il provider AI non torna operativo.
+      Adattamento AI non disponibile. Non puoi esportare la ricetta o proseguire verso Monsieur Cuisine finche' il provider AI non torna operativo.
     </div>
   {% endif %}
 
@@ -74,20 +74,25 @@
     <div class="job-text" style="margin-top: 0;">
       {% if job.manual_export_payload %}
         Questo job arriva da un payload JSON gia' pronto ed e' stato marcato come confermato al momento del caricamento.
+      {% elif job.creation_source == 'url' %}
+        Per gli import da URL la conferma finale viene applicata automaticamente appena l'adattamento AI termina con successo.
       {% else %}
         Conferma la ricetta solo quando hai finito di verificare porzioni, ingredienti e versione finale da usare.
       {% endif %}
     </div>
-    {% if job.status in ['completed', 'awaiting_review'] and not job.confirmed_at %}
+    {% if job.status in ['completed', 'awaiting_review'] and not job.confirmed_at and job.creation_source != 'url' %}
       <form action="/imports/{{ job.id }}/confirm" method="post" hx-post="/imports/{{ job.id }}/confirm" hx-target="#job-status" hx-swap="outerHTML" style="margin-top: 8px;">
         <button type="submit" class="button">Conferma ricetta pronta</button>
       </form>
-    {% elif job.adaptation and job.adaptation.mode != 'ai-live' and not job.confirmed_at %}
+    {% elif job.adaptation and job.adaptation.mode != 'ai-live' and not job.confirmed_at and job.creation_source != 'url' %}
       <span class="button button-disabled" style="margin-top: 8px; width: 100%;">Conferma bloccata: AI non disponibile</span>
     {% endif %}
   </div>
 
   {% if job.recipe_data %}
+    {% set is_ai_generated_payload = job.creation_source == 'ai-description' %}
+    {% set show_basic_recipe_sections = job.creation_source == 'manual-payload' %}
+
     {% if job.manual_export_payload %}
       <div class="info-box">
         <div class="row-between">
@@ -104,7 +109,11 @@
           <h2 class="label">Payload pronto per Tampermonkey</h2>
           <button type="button" class="button button-secondary" onclick="copyFromTarget('manual-export-payload')">Copia payload</button>
         </div>
-        <textarea id="manual-export-payload" class="input prompt-textarea" rows="18">{{ job.manual_export_payload_json }}</textarea>
+        {% if is_ai_generated_payload %}
+          <textarea id="manual-export-payload" hidden aria-hidden="true" tabindex="-1">{{ job.manual_export_payload_json }}</textarea>
+        {% else %}
+          <textarea id="manual-export-payload" class="input prompt-textarea" rows="18">{{ job.manual_export_payload_json }}</textarea>
+        {% endif %}
       </div>
     {% endif %}
 
@@ -156,7 +165,7 @@
           </div>
         {% endif %}
         <div class="job-text" style="margin-top: 0;">
-          Solo i passaggi classificati come Monsieur Cuisine vengono esportati verso la macchina. I passaggi manuali ed esterni restano visibili separatamente in questa pagina.
+          Solo i passaggi classificati come Monsieur Cuisine vengono esportati verso la macchina. Le azioni manuali ed esterne restano tracciate nell'adattamento, ma non vengono inviate al payload finale.
         </div>
       </div>
 
@@ -233,21 +242,23 @@
 
     {% endif %}
 
-    <div class="info-box">
-      <div class="row-between">
-        <h2 class="label">Titolo</h2>
-        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-title')">Copia</button>
+    {% if show_basic_recipe_sections %}
+      <div class="info-box">
+        <div class="row-between">
+          <h2 class="label">Titolo</h2>
+          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-title')">Copia</button>
+        </div>
+        <div id="recipe-title" class="info-value">{{ job.recipe_data.title }}</div>
       </div>
-      <div id="recipe-title" class="info-value">{{ job.recipe_data.title }}</div>
-    </div>
 
-    <div class="info-box">
-      <div class="row-between">
-        <h2 class="label">Ingredienti</h2>
-        <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-ingredients')">Copia ingredienti</button>
+      <div class="info-box">
+        <div class="row-between">
+          <h2 class="label">Ingredienti</h2>
+          <button type="button" class="button button-secondary" onclick="copyFromTarget('recipe-ingredients')">Copia ingredienti</button>
+        </div>
+        <textarea id="recipe-ingredients" class="input" rows="10">{{ job.ingredients_text }}</textarea>
       </div>
-      <textarea id="recipe-ingredients" class="input" rows="10">{{ job.ingredients_text }}</textarea>
-    </div>
+    {% endif %}
 
     {% if job.scaled_ingredients_text %}
       <div class="info-box">
@@ -280,7 +291,7 @@
         </div>
       {% endif %}
 
-      {% if job.adaptation.adapted_steps %}
+      {% if job.adaptation.adapted_steps and job.creation_source != 'url' %}
         <div class="info-box">
           <div class="row-between">
             <h2 class="label">PASSAGGI</h2>
