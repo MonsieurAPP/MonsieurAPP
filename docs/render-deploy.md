@@ -6,8 +6,8 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 
 - usa `render.yaml` per creare un web service Docker;
 - imposta un `dockerCommand` esplicito che avvia Uvicorn su `0.0.0.0:$PORT`, evitando dipendenze dal launcher locale;
-- espone health check su `/health`;
-- l'endpoint `/health` restituisce anche metadati operativi (`timestamp`, `uptime`, `service`) oltre ai flag AI;
+- espone health check su `/health` e mantiene anche l'alias API `/api/health`;
+- gli endpoint `/health` e `/api/health` restituiscono anche metadati operativi (`timestamp`, `uptime`, `service`) oltre ai flag AI;
 - mantiene `numInstances: 1` perche' i job sono in memoria e non sono condivisi tra istanze;
 - monta un disco persistente su `/app/persisted-data` per conservare il prompt template personalizzato tra restart e deploy;
 - chiede in fase di creazione le variabili `AI_API_KEY`, `AI_MODEL` e `AI_BASE_URL`.
@@ -19,7 +19,7 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 3. Durante la creazione conferma il servizio `monsieurapp` definito in `render.yaml`.
 4. Inserisci i valori di `AI_API_KEY` e `AI_MODEL` quando Render li richiede.
 5. Se stai usando un provider OpenAI-compatible diverso da OpenAI, imposta anche `AI_BASE_URL` con l'endpoint corretto del provider. Esempio Groq: `https://api.groq.com/openai/v1`.
-6. Attendi il primo deploy e verifica `https://<tuo-servizio>.onrender.com/health`.
+6. Attendi il primo deploy e verifica `https://<tuo-servizio>.onrender.com/health` oppure `https://<tuo-servizio>.onrender.com/api/health`.
 
 ## Variabili utili
 

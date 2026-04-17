@@ -1267,7 +1267,9 @@ async def job_status_partial(request: Request, job_id: str) -> HTMLResponse:
     return templates.TemplateResponse(request, "partials/job_status.html", build_job_template_context(job))
 
 
+@app.get("/api/health/uptime")
 @app.get("/health/uptime")
+@app.get("/api/healthz")
 @app.get("/healthz")
 async def uptime_healthcheck() -> dict[str, object]:
     return {
@@ -1278,6 +1280,7 @@ async def uptime_healthcheck() -> dict[str, object]:
     }
 
 
+@app.get("/api/health")
 @app.get("/health")
 async def healthcheck() -> dict[str, object]:
     ai_settings = get_ai_settings()
