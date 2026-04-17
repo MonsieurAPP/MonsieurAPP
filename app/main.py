@@ -1315,6 +1315,15 @@ async def uptime_healthcheck() -> dict[str, object]:
     }
 
 
+@app.head("/api/health/uptime")
+@app.head("/health/uptime")
+@app.head("/api/healthz")
+@app.head("/healthz")
+async def uptime_healthcheck_head() -> Response:
+    await uptime_healthcheck()
+    return Response(status_code=200)
+
+
 @app.get("/api/health")
 @app.get("/health")
 async def healthcheck() -> dict[str, object]:
@@ -1333,3 +1342,10 @@ async def healthcheck() -> dict[str, object]:
         "ai_has_model": bool(ai_settings["model"]),
         "ai_uses_custom_base_url": configured_base_url != default_base_url,
     }
+
+
+@app.head("/api/health")
+@app.head("/health")
+async def healthcheck_head() -> Response:
+    await healthcheck()
+    return Response(status_code=200)
