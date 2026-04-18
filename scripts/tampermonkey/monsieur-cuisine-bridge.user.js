@@ -1099,6 +1099,87 @@
     return candidates[0]?.element || null;
   }
 
+  function findRecipeImageUploadContainer(field = findRecipeImageUploadField()) {
+    return field?.closest?.("div[accept], .container, .v-card, .v-sheet, .v-input, form, .col, .row")
+      || field?.parentElement
+      || null;
+  }
+
+  function hasRecipeImagePreview(container = findRecipeImageUploadContainer()) {
+    if (!(container instanceof Element)) {
+      return false;
+    }
+
+    return Array.from(container.querySelectorAll("img"))
+      .filter((image) => isVisibleElement(image) || normalizeText(image.getAttribute("src")))
+      .some((image) => {
+        const src = normalizeText(image.getAttribute("src") || image.src || "");
+        if (!src) {
+          return false;
+        }
+        if (src.includes("placeholder-uploadvideo") || src.endsWith(".svg")) {
+          return false;
+        }
+        return /^(blob:|data:image\/|https?:|\/)/i.test(src);
+      });
+  }
+
+  async function waitForRecipeImagePreview(container, timeoutMs = 12000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (hasRecipeImagePreview(container)) {
+        return true;
+      }
+      await sleep(250);
+    }
+    return hasRecipeImagePreview(container);
+  }
+
+  function findRecipeImageSaveButton(container = findRecipeImageUploadContainer()) {
+    const searchRoots = uniqueElements([
+      container,
+      container?.closest?.("form"),
+      container?.parentElement,
+      container?.parentElement?.parentElement,
+    ].filter(Boolean));
+
+    const buttonCandidates = searchRoots.flatMap((root) => {
+      if (!(root instanceof Element)) {
+        return [];
+      }
+      return Array.from(root.querySelectorAll("button, a, [role='button'], [tabindex], .v-btn, .btn"))
+        .map((element) => element.closest("button, a, [role='button'], [tabindex], .v-btn, .btn") || element)
+        .filter((element) => isVisibleElement(element) && !isElementDisabled(element));
+    });
+
+    return selectBestElement(
+      buttonCandidates,
+      ["salvare", "salva", "save"],
+      ["chiudere", "chiudi", "close", "annulla", "cancel", "avanti", "next", "continua", "continue"],
+      { textExtractor: collectButtonText, requireIncludeMatch: true }
+    );
+  }
+
+  async function persistRecipeImageUpload(container = findRecipeImageUploadContainer()) {
+    const saveButton = findRecipeImageSaveButton(container);
+    if (!saveButton) {
+      return false;
+    }
+
+    clickElementRobust(saveButton);
+    await sleep(1000);
+
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      if (hasRecipeImagePreview(container) && (isElementDisabled(saveButton) || !isVisibleElement(saveButton))) {
+        return true;
+      }
+      await sleep(250);
+    }
+
+    return hasRecipeImagePreview(container);
+  }
+
   function readImageSize(blob) {
     return new Promise((resolve, reject) => {
       const objectUrl = URL.createObjectURL(blob);
@@ -1188,6 +1269,7 @@
     if (!imageField) {
       throw new Error(`Campo upload immagine non trovato. Campi visibili:\n${debugVisibleFields()}`);
     }
+    const imageContainer = findRecipeImageUploadContainer(imageField);
 
     const candidate = resolveRecipeImageCandidate(recipe);
     if (!candidate?.imageUrl) {
@@ -1221,11 +1303,19 @@
     imageField.files = dataTransfer.files;
     imageField.dispatchEvent(new Event("input", { bubbles: true }));
     imageField.dispatchEvent(new Event("change", { bubbles: true }));
-    await sleep(1200);
+    await sleep(600);
 
     if (!imageField.files?.length) {
       throw new Error("Upload immagine non riuscito: il file input risulta ancora vuoto.");
     }
+
+    await waitForRecipeImagePreview(imageContainer, 12000);
+    await sleep(500);
+    const persisted = await persistRecipeImageUpload(imageContainer);
+    if (!persisted) {
+      log("Bottone Salva immagine non trovato vicino al widget upload; preview presente ma persistenza non confermata.");
+    }
+    await sleep(1200);
 
     return candidate;
   }
