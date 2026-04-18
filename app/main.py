@@ -204,8 +204,8 @@ def render_tampermonkey_script(request: Request) -> str:
     install_url = build_absolute_tampermonkey_install_url(request)
     return (
         script_content
-        .replace(TAMPERMONKEY_SCRIPT_INSTALL_URL_PLACEHOLDER, install_url, 2)
-        .replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 1)
+        .replace(TAMPERMONKEY_SCRIPT_INSTALL_URL_PLACEHOLDER, install_url)
+        .replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 2)
         .replace(TAMPERMONKEY_APP_ACCESS_PLACEHOLDER, APP_SHARED_ACCESS_TOKEN, 1)
     )
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.12.3
+// @version      0.2.12.4
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
