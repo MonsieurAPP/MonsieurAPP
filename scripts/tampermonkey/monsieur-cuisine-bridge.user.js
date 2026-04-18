@@ -454,8 +454,7 @@
     const rawSteps = machineSteps.length > 0 ? machineSteps : operationalTimeline;
     const normalizedSteps = rawSteps
       .filter((step) => step && typeof step === "object")
-      .map((step, index) => normalizeExportedStep(step, index))
-      .flatMap((step) => expandNormalizedStep(step));
+      .map((step, index) => normalizeExportedStep(step, index));
     const descriptiveStepCount = normalizedSteps.filter((step) => step.isDescriptive).length;
 
     return {
