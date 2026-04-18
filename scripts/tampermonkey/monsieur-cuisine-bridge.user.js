@@ -1055,6 +1055,21 @@
     return candidates[0]?.element || null;
   }
 
+  function findCategoryField() {
+    const categoryPatterns = ["categoria", "category", "categorie"];
+    const candidates = uniqueElements(visibleElements("[role='combobox'] input, input[readonly], input[autocomplete='off'], .v-select input"))
+      .map((element) => {
+        const haystack = collectFieldText(element);
+        const score = categoryPatterns.reduce((total, pattern) => total + Number(haystack.includes(pattern)), 0)
+          + Number(Boolean(element.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input")));
+        return { element, score };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+
+    return candidates[0]?.element || null;
+  }
+
   function resolveRecipeImageCandidate(recipe) {
     if (normalizeText(recipe?.imageUrl)) {
       return {
@@ -4209,6 +4224,16 @@
       throw new Error(`Unita porzioni non valorizzata. Unita richiesta: ${servingInfo.unit}.`);
     }
     await settleSelectLikeField(servingUnitField);
+
+    const categoryField = findCategoryField();
+    if (!categoryField) {
+      throw new Error(`Campo categoria non trovato. Campi visibili:\n${debugVisibleFields()}`);
+    }
+    const categorySet = await setSelectLikeFieldOption(categoryField, ["Cucina italiana"]);
+    if (!categorySet && !selectLikeFieldMatchesLabels(categoryField, ["Cucina italiana"])) {
+      throw new Error(`Categoria non valorizzata. Valore richiesto: Cucina italiana.`);
+    }
+    await settleSelectLikeField(categoryField);
 
     const uploadedImage = await uploadRecipeImage(recipe);
     if (uploadedImage?.pageUrl) {
