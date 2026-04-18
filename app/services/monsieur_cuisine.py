@@ -1,7 +1,13 @@
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Optional
+
+try:
+    import winreg
+except ImportError:  # pragma: no cover - Windows-only registry access
+    winreg = None
 
 from playwright.sync_api import (
     BrowserContext,
@@ -83,23 +89,71 @@ class MonsieurCuisineUploader:
             self._playwright.stop()
 
     @classmethod
+    def browser_candidates_by_channel(cls) -> dict[str, list[Path]]:
+        return {
+            "chrome": [
+                Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+                Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+            ],
+            "msedge": [
+                Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+                Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            ],
+        }
+
+    @classmethod
+    def find_default_browser_channel(cls) -> Optional[str]:
+        if os.name != "nt" or winreg is None:
+            return None
+
+        registry_paths = (
+            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
+            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+        )
+        for registry_path in registry_paths:
+            try:
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_path) as registry_key:
+                    prog_id, _ = winreg.QueryValueEx(registry_key, "ProgId")
+            except OSError:
+                continue
+
+            normalized_prog_id = str(prog_id or "").strip().lower()
+            if normalized_prog_id.startswith("msedge"):
+                return "msedge"
+            if normalized_prog_id.startswith("chromehtml"):
+                return "chrome"
+
+        return None
+
+    @classmethod
     def browser_candidates(cls) -> list[Path]:
+        candidates_by_channel = cls.browser_candidates_by_channel()
+        ordered_channels: list[str] = []
+        default_channel = cls.find_default_browser_channel()
+        if default_channel:
+            ordered_channels.append(default_channel)
+        ordered_channels.extend(channel for channel in candidates_by_channel if channel not in ordered_channels)
+
         return [
-            Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-            Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
-            Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+            candidate
+            for channel in ordered_channels
+            for candidate in candidates_by_channel.get(channel, [])
         ]
 
     @classmethod
-    def find_browser_executable(cls) -> Optional[Path]:
-        for candidate in cls.browser_candidates():
+    def find_browser_executable(cls, channel: str | None = None) -> Optional[Path]:
+        candidates = cls.browser_candidates_by_channel().get(channel, []) if channel else cls.browser_candidates()
+        for candidate in candidates:
             if candidate.exists():
                 return candidate
         return None
 
     @classmethod
     def find_browser_channel(cls) -> Optional[str]:
+        default_channel = cls.find_default_browser_channel()
+        if default_channel and cls.find_browser_executable(default_channel):
+            return default_channel
+
         browser_path = cls.find_browser_executable()
         if not browser_path:
             return None
@@ -121,7 +175,7 @@ class MonsieurCuisineUploader:
         cls.SESSION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         if cls.SESSION_MARKER.exists():
             cls.SESSION_MARKER.unlink()
-        browser_path = cls.find_browser_executable()
+        browser_path = cls.find_browser_executable(cls.find_browser_channel())
         return str(browser_path) if browser_path else "playwright"
 
     @classmethod
@@ -179,7 +233,7 @@ class MonsieurCuisineUploader:
         self.page.wait_for_load_state("networkidle")
         body_text = self.page.locator("body").inner_text(timeout=5000).lower()
         if "accesso richiesto" in body_text or "cominciamo ora" in body_text or "log in" in body_text:
-            raise LoginError("La sessione del browser non risulta autenticata. Completa il login nella finestra Chrome/Edge dedicata.")
+            raise LoginError("La sessione del browser non risulta autenticata. Completa il login nella finestra del browser dedicato.")
 
     def open_created_recipes(self) -> None:
         if not self.page:
@@ -355,7 +409,7 @@ def connect_monsieur_cuisine_account(timeout_seconds: int = 180) -> str:
                 time.sleep(2)
 
     raise LoginError(
-        "Login non completato entro il tempo previsto. Riprova e completa l'accesso nella finestra del browser aperta da Playwright."
+        "Login non completato entro il tempo previsto. Riprova e completa l'accesso nella finestra del browser dedicato aperta da Playwright."
     )
 
 

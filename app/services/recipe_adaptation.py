@@ -17,7 +17,7 @@ from app.services.adaptation_prompt_store import load_adaptation_prompt_template
 
 
 LOGGER = logging.getLogger("monsieur_app.adaptation")
-PROMPT_VERSION = "mc-adaptation-v5"
+PROMPT_VERSION = "mc-adaptation-v6"
 
 
 AMBIGUITY_TOKENS = (
@@ -57,6 +57,8 @@ CANONICAL_PROGRAMS = {
 
 HIGH_SPEED_PROGRAMS = {"Smoothie", "Ridurre in purea", "Turbo"}
 VALID_STEP_ENVIRONMENTS = {"mc", "external", "transition"}
+MIN_MC_TARGETED_WEIGHT_GRAMS = 5
+MIN_MC_TARGETED_WEIGHT_NOTE_MARKER = "Monsieur Cuisine non accetta pesate inferiori a 5 g"
 
 SOLID_FOOD_TOKENS = (
     "carne",
@@ -422,6 +424,43 @@ def format_targeted_weight(targeted_weight: int | None, targeted_weight_unit: st
     return f"{targeted_weight} {normalize_targeted_weight_unit(targeted_weight_unit) or 'g'}"
 
 
+def sanitize_monsieur_cuisine_targeted_weight(
+    targeted_weight: int | None,
+    targeted_weight_unit: str | None,
+) -> tuple[int | None, str | None, int | None]:
+    if targeted_weight is None:
+        return None, None, None
+
+    normalized_unit = normalize_targeted_weight_unit(targeted_weight_unit) or "g"
+    if targeted_weight < MIN_MC_TARGETED_WEIGHT_GRAMS:
+        return MIN_MC_TARGETED_WEIGHT_GRAMS, normalized_unit, targeted_weight
+    return targeted_weight, normalized_unit, None
+
+
+def build_small_targeted_weight_note(actual_weight: int, targeted_weight_unit: str | None) -> str:
+    normalized_unit = normalize_targeted_weight_unit(targeted_weight_unit) or "g"
+    return (
+        f"Nota: peso reale {actual_weight} {normalized_unit}. "
+        f"{MIN_MC_TARGETED_WEIGHT_NOTE_MARKER}; il target automatico e' stato impostato a {MIN_MC_TARGETED_WEIGHT_GRAMS} g per evitare errori."
+    )
+
+
+def append_small_targeted_weight_note(
+    text: str | None,
+    actual_weight: int,
+    targeted_weight_unit: str | None,
+) -> str:
+    note = build_small_targeted_weight_note(actual_weight, targeted_weight_unit)
+    normalized_text = (text or "").strip()
+    if MIN_MC_TARGETED_WEIGHT_NOTE_MARKER.lower() in normalized_text.lower():
+        return normalized_text or note
+    if not normalized_text:
+        return note
+
+    separator = "" if normalized_text.endswith((".", "!", "?", ":")) else "."
+    return f"{normalized_text}{separator} {note}"
+
+
 def compute_scaling_factor(desired_servings: int | None, source_servings: int | None) -> float | None:
     if not desired_servings or not source_servings or desired_servings <= 0 or source_servings <= 0:
         return None
@@ -583,9 +622,20 @@ def build_adapted_step(
     if environment == "mc":
         program = infer_program_from_text(step)
         program, temperature_c, speed, reverse = apply_program_defaults(step, program)
-        accessory = infer_accessory(step, program)
         targeted_weight = scale_targeted_weight(step.targeted_weight, scaling_factor) if program == "Bilancia" else None
         targeted_weight_unit = normalize_targeted_weight_unit(step.targeted_weight_unit) if targeted_weight is not None else None
+        if program == "Bilancia":
+            targeted_weight, targeted_weight_unit, actual_weight = sanitize_monsieur_cuisine_targeted_weight(
+                targeted_weight,
+                targeted_weight_unit,
+            )
+            if actual_weight is not None:
+                detailed_instructions = append_small_targeted_weight_note(
+                    detailed_instructions,
+                    actual_weight,
+                    targeted_weight_unit,
+                )
+        accessory = infer_accessory(step, program)
     elif environment == "transition":
         program = infer_transition_program(step)
         temperature_c = None
@@ -735,7 +785,7 @@ def build_live_prompt(
         "- Mantieni una timeline unica e cronologica.",
         "- I passaggi environment = external o transition devono restare nella risposta, ma non verranno esportati verso Monsieur Cuisine.",
         "- I passaggi environment = mc sono l'unica base per l'upload automatico verso Monsieur Cuisine.",
-        "- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g.",
+        "- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g; se il peso reale e' sotto 5 g, indica il peso reale in detailed_instructions ma imposta targeted_weight a 5 per compatibilita' con Monsieur Cuisine.",
         "- Se manca evidenza per tempo, temperatura o velocita, lascia null.",
         "- Aggiungi warning espliciti per ogni ambiguita rilevante.",
         "Schema JSON richiesto:",
@@ -904,6 +954,21 @@ def build_adaptation_from_payload(
             reverse = True
         if environment == "transition" and program is None:
             program = infer_transition_program(RecipeStep(description=description, source_text=str(item.get("detailed_instructions") or description)))
+        accessory = str(item.get("accessory") or "").strip() or (base_step.accessory if same_environment_as_base else None)
+        detailed_instructions = str(item.get("detailed_instructions") or "").strip() or (
+            base_step.detailed_instructions if same_environment_as_base else description
+        )
+        if environment == "mc" and program == "Bilancia":
+            targeted_weight, targeted_weight_unit, actual_weight = sanitize_monsieur_cuisine_targeted_weight(
+                targeted_weight,
+                targeted_weight_unit,
+            )
+            if actual_weight is not None:
+                detailed_instructions = append_small_targeted_weight_note(
+                    detailed_instructions,
+                    actual_weight,
+                    targeted_weight_unit,
+                )
         parameters_summary = str(item.get("parameters_summary") or "").strip() or build_step_parameters_summary(
             environment,
             program,
@@ -921,8 +986,8 @@ def build_adaptation_from_payload(
                 environment=environment,
                 program=program,
                 parameters_summary=parameters_summary,
-                accessory=str(item.get("accessory") or "").strip() or (base_step.accessory if same_environment_as_base else None),
-                detailed_instructions=str(item.get("detailed_instructions") or "").strip() or (base_step.detailed_instructions if same_environment_as_base else description),
+                accessory=accessory,
+                detailed_instructions=detailed_instructions,
                 duration_seconds=duration_seconds,
                 temperature_c=temperature_c,
                 speed=speed,

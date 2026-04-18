@@ -51,7 +51,7 @@ Per Cottura personalizzata specifica sempre: Tempo | Temperatura | Velocita | Se
 - Accessori: specifica quando usare cestello, vaporiera profonda, vaporiera piana o farfalla.
 - Aggiunta ingredienti: se il testo contiene piu' aggiunte e una cottura, scomponi in passaggi distinti e cronologici.
 - Aggiunta ingredienti con peso espresso in g o grammi: preferisci Bilancia se il passaggio e' solo di carico ingrediente.
-- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g.
+- Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g; se il peso reale e' sotto 5 g aggiungi una nota in detailed_instructions con il peso reale e imposta targeted_weight a 5 g.
 - Aggiunta ingredienti senza peso misurabile: puoi lasciare program nullo se il passaggio e' puramente manuale o di carico non assistito.
 - Prudenza: non inventare ingredienti, quantita, tempi, temperature o velocita non supportati dal testo. Se manca un dato, lascialo nullo e segnala un warning.
 

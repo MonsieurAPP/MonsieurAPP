@@ -46,7 +46,7 @@ def build_payload_generation_messages(recipe_description: str, desired_servings:
                     "- operationalTimeline deve contenere tra 3 e 10 step utili.",
                     "- Ogni step deve contenere questi campi: environment, description, program, parametersSummary, accessory, detailedInstructions, durationSeconds, temperatureC, speed, targetedWeight, targetedWeightUnit, reverse, confidence, rationale, sourceRefs.",
                     "- environment puo' essere solo mc, external o transition.",
-                    "- Per gli step di pesata usa program uguale a Bilancia, targetedWeight numerico, targetedWeightUnit uguale a g e gli altri parametri tecnici a null quando non servono.",
+                    "- Per gli step di pesata usa program uguale a Bilancia, targetedWeight numerico, targetedWeightUnit uguale a g e gli altri parametri tecnici a null quando non servono; se il peso reale e' inferiore a 5 g, scrivi una nota in detailedInstructions con il peso reale ma imposta targetedWeight a 5.",
                     "- Per gli altri step macchina usa program uguale a Cottura personalizzata.",
                     "- Per gli step external o transition usa program null, reverse false e tutti i campi tecnici a null.",
                     "- sourceRefs deve essere sempre un array, anche vuoto.",

@@ -27,10 +27,12 @@ from app.services.adaptation_prompt_store import (
 )
 from app.services.payload_generation import PayloadGenerationError, generate_payload_from_description
 from app.services.recipe_adaptation import (
+    append_small_targeted_weight_note,
     build_recipe_adaptation,
     extract_json_payload,
     get_ai_settings,
     is_live_ai_configured,
+    sanitize_monsieur_cuisine_targeted_weight,
 )
 from app.services.recipe_service import RecipeExtractionError, extract_recipe
 
@@ -39,6 +41,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 TAMPERMONKEY_SCRIPT_PATH = BASE_DIR / "scripts" / "tampermonkey" / "monsieur-cuisine-bridge.user.js"
+TAMPERMONKEY_INSTALL_PATH = "/downloads/monsieur-cuisine-bridge.user.js"
+TAMPERMONKEY_DOWNLOAD_FILENAME = "monsieur-cuisine-bridge.txt"
 LOCAL_APP_BASE_URL = "http://127.0.0.1:8000"
 TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER = "__APP_BASE_URL__"
 
@@ -341,6 +345,46 @@ def parse_optional_bool(value: object) -> bool:
     return False
 
 
+def sanitize_export_step_payload(step: dict[str, object]) -> dict[str, object]:
+    sanitized_step = dict(step)
+    targeted_weight, targeted_weight_unit, actual_weight = sanitize_monsieur_cuisine_targeted_weight(
+        parse_optional_int(sanitized_step.get("targetedWeight"), minimum=1),
+        sanitized_step.get("targetedWeightUnit"),
+    )
+    sanitized_step["targetedWeight"] = targeted_weight
+    sanitized_step["targetedWeightUnit"] = targeted_weight_unit
+
+    if actual_weight is None:
+        return sanitized_step
+
+    base_description = str(sanitized_step.get("description") or "").strip() or None
+    base_detailed_instructions = str(sanitized_step.get("detailedInstructions") or "").strip() or base_description
+    sanitized_step["detailedInstructions"] = append_small_targeted_weight_note(
+        base_detailed_instructions,
+        actual_weight,
+        targeted_weight_unit,
+    )
+
+    program = str(sanitized_step.get("program") or "").strip().lower()
+    if program == "bilancia" and targeted_weight is not None:
+        sanitized_step["parametersSummary"] = f"Bilancia | {targeted_weight} {targeted_weight_unit or 'g'}"
+
+    return sanitized_step
+
+
+def sanitize_export_payload(payload: dict[str, object]) -> dict[str, object]:
+    sanitized_payload = dict(payload)
+    for key in ("steps", "manualSteps", "transitionSteps", "operationalTimeline"):
+        items = sanitized_payload.get(key)
+        if not isinstance(items, list):
+            continue
+        sanitized_payload[key] = [
+            sanitize_export_step_payload(item) if isinstance(item, dict) else item
+            for item in items
+        ]
+    return sanitized_payload
+
+
 def coerce_string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -434,7 +478,7 @@ def normalize_manual_payload_step(step: dict[str, object], index: int) -> dict[s
     if isinstance(step.get("sourceRefs"), list):
         source_refs = [ref for ref in (parse_optional_int(item, minimum=1) for item in step["sourceRefs"]) if ref is not None]
 
-    return {
+    return sanitize_export_step_payload({
         "environment": normalize_manual_environment(step.get("environment")),
         "description": description,
         "program": str(step.get("program") or "").strip() or None,
@@ -450,7 +494,7 @@ def normalize_manual_payload_step(step: dict[str, object], index: int) -> dict[s
         "confidence": str(step.get("confidence") or "").strip() or None,
         "rationale": str(step.get("rationale") or "").strip() or None,
         "sourceRefs": source_refs,
-    }
+    })
 
 
 def compute_scaling_factor(desired_servings: int | None, source_servings: int | None) -> float | None:
@@ -683,7 +727,7 @@ def build_export_payload(job, mode: str = "selected") -> dict[str, object]:
         payload["confirmedAt"] = job.confirmed_at.isoformat() if job.confirmed_at else None
         payload.setdefault("sourceUrl", job.recipe_data.source_url if job.recipe_data else job.recipe_url)
         payload.setdefault("sourceSite", job.recipe_data.source_site if job.recipe_data else "Payload manuale")
-        return payload
+        return sanitize_export_payload(payload)
 
     if not job.recipe_data:
         raise HTTPException(status_code=409, detail="Ricetta non ancora disponibile")
@@ -730,7 +774,7 @@ def build_export_payload(job, mode: str = "selected") -> dict[str, object]:
         transition_steps = []
         timeline_steps = list(steps)
 
-    return {
+    payload = {
         "jobId": job.id,
         "sourceUrl": job.recipe_data.source_url,
         "sourceSite": job.recipe_data.source_site,
@@ -753,6 +797,7 @@ def build_export_payload(job, mode: str = "selected") -> dict[str, object]:
         "finalNote": job.adaptation.final_note if job.adaptation else None,
         "warnings": job.adaptation.warnings if job.adaptation else [],
     }
+    return sanitize_export_payload(payload)
 
 
 def build_steps_text(recipe) -> str:
@@ -1075,7 +1120,21 @@ async def download_tampermonkey_script(request: Request) -> Response:
         content=render_tampermonkey_script(request),
         media_type="application/javascript",
         headers={
-            "Content-Disposition": 'attachment; filename="monsieur-cuisine-bridge.user.js"',
+            "Content-Disposition": f'attachment; filename="{TAMPERMONKEY_DOWNLOAD_FILENAME}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get(TAMPERMONKEY_INSTALL_PATH, name="install_tampermonkey_script")
+async def install_tampermonkey_script(request: Request) -> Response:
+    if not TAMPERMONKEY_SCRIPT_PATH.exists():
+        raise HTTPException(status_code=404, detail="Script Tampermonkey non trovato")
+
+    return Response(
+        content=render_tampermonkey_script(request),
+        media_type="application/javascript",
+        headers={
             "Cache-Control": "no-store",
         },
     )

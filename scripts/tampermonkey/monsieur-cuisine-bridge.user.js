@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.12.1
+// @version      0.2.12.2
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -23,6 +23,8 @@
   const TARGET_URL = "https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart";
   const SCALE_PROGRAM_LABEL = "Bilancia";
   const CUSTOM_COOKING_PROGRAM_LABEL = "Cottura personalizzata";
+  const MIN_SCALE_WEIGHT_GRAMS = 5;
+  const MIN_SCALE_WEIGHT_NOTE_MARKER = "Monsieur Cuisine non accetta pesate inferiori a 5 g";
   const STEP_PROGRAM_SWITCH_SELECTOR = "input[role='switch'][type='checkbox'], input[type='checkbox'][role='switch'], input[aria-checked][type='checkbox']";
   const CUSTOM_COOKING_TEMPERATURE_STEPS = [0, 37, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130];
 
@@ -204,6 +206,23 @@
     return Math.max(1, Math.round(parsedValue));
   }
 
+  function buildSmallWeightNote(actualWeight, unit = "g") {
+    return `Nota: peso reale ${actualWeight} ${unit}. ${MIN_SCALE_WEIGHT_NOTE_MARKER}; il target automatico e' stato impostato a ${MIN_SCALE_WEIGHT_GRAMS} g per evitare errori.`;
+  }
+
+  function appendSmallWeightNote(text, actualWeight, unit = "g") {
+    const note = buildSmallWeightNote(actualWeight, unit);
+    const normalizedText = normalizeText(text);
+    if (normalizedText.toLowerCase().includes(MIN_SCALE_WEIGHT_NOTE_MARKER.toLowerCase())) {
+      return normalizedText || note;
+    }
+    if (!normalizedText) {
+      return note;
+    }
+    const needsSeparator = /[.!?:]$/.test(normalizedText) ? "" : ".";
+    return `${normalizedText}${needsSeparator} ${note}`;
+  }
+
   function formatStepTargetedWeight(step) {
     if (step?.targetedWeight == null) {
       return "";
@@ -241,11 +260,11 @@
   function normalizeExportedStep(step, index) {
     const environment = normalizeStepEnvironment(step);
     const title = normalizeText(step?.description || step?.detailedInstructions || `Passaggio ${index + 1}`);
-    const description = normalizeText(step?.detailedInstructions || step?.description || title);
+    let description = normalizeText(step?.detailedInstructions || step?.description || title);
     const isDescriptive = environment !== "mc";
     const originalProgram = normalizeStepProgram(step);
     const selectedProgram = isDescriptive ? null : resolveInternalStepProgram(step, title, description, originalProgram);
-    const targetedWeight = isDescriptive
+    let targetedWeight = isDescriptive
       ? null
       : (
         normalizeStepTargetedWeight(step?.targetedWeight, step?.targetedWeightUnit)
@@ -253,6 +272,11 @@
           ? normalizeStepTargetedWeight(step?.parametersSummary || description)
           : null)
       );
+
+    if (!isDescriptive && targetedWeight != null && targetedWeight < MIN_SCALE_WEIGHT_GRAMS) {
+      description = appendSmallWeightNote(description, targetedWeight, "g");
+      targetedWeight = MIN_SCALE_WEIGHT_GRAMS;
+    }
 
     return {
       title: title || `Passaggio ${index + 1}`,
