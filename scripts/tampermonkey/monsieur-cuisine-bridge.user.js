@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.13.0
+// @version      0.2.15.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -454,7 +454,8 @@
     const rawSteps = machineSteps.length > 0 ? machineSteps : operationalTimeline;
     const normalizedSteps = rawSteps
       .filter((step) => step && typeof step === "object")
-      .map((step, index) => normalizeExportedStep(step, index));
+      .map((step, index) => normalizeExportedStep(step, index))
+      .flatMap((step) => expandNormalizedStep(step));
     const descriptiveStepCount = normalizedSteps.filter((step) => step.isDescriptive).length;
 
     return {
@@ -2149,8 +2150,12 @@
     }
 
     const opened = await setSelectLikeFieldOption(field, [optionLabel]);
-    if (opened && selectLikeFieldMatchesLabels(field, [optionLabel])) {
-      return true;
+    if (opened) {
+      // Vue potrebbe aggiornare il valore in modo asincrono: aspettiamo prima di verificare
+      await sleep(500);
+      if (selectLikeFieldMatchesLabels(field, [optionLabel])) {
+        return true;
+      }
     }
 
     const trigger = field.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input, .v-input__slot, .v-select__slot") || field;
@@ -2163,21 +2168,24 @@
       option = options[20] || null;
     }
     if (!option) {
-      document.body?.click?.();
-      await sleep(250);
+      // Chiude il dropdown con Escape senza annullare selezioni in corso
+      document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape", code: "Escape", keyCode: 27 }));
+      await sleep(300);
       return false;
     }
 
     if (!optionLooksSelected(option)) {
       clickElementRobust(option);
-      await sleep(500);
+      await sleep(700);
     }
 
-    const selected = optionLooksSelected(option)
-      || selectLikeFieldMatchesLabels(field, [optionLabel])
+    // Chiude il dropdown con Escape: Vuetify non annulla la selezione già effettuata
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape", code: "Escape", keyCode: 27 }));
+    await sleep(500);
+
+    const selected = selectLikeFieldMatchesLabels(field, [optionLabel])
+      || optionLooksSelected(option)
       || /cucina italiana/.test(normalizeText(option.textContent).toLowerCase());
-    document.body?.click?.();
-    await sleep(350);
     return selected;
   }
 
@@ -4244,17 +4252,18 @@
     await commitTextInputLikeUser(titleField, recipe.title);
     await ensureFieldValue(titleField, recipe.title, "Titolo ricetta");
 
-    const briefDescriptionField = findField({
+    const briefDescriptionField = await waitForField({
       selectors: [
         "textarea[name*='description']",
         "textarea[placeholder*='breve descrizione' i]",
         "textarea[placeholder*='descrizione' i]",
+        "textarea[placeholder*='description' i]",
         "textarea",
         "[contenteditable='true']",
         "[role='textbox']",
       ],
-      patterns: ["breve descrizione", "inserisci qui una breve descrizione", "short description", "descrizione"],
-    });
+      patterns: ["breve descrizione", "inserisci qui una breve descrizione", "short description", "descrizione", "description"],
+    }, 5000);
     if (!briefDescriptionField) {
       throw new Error(`Campo breve descrizione non trovato nella pagina Monsieur Cuisine. Campi visibili:\n${debugVisibleFields()}`);
     }
