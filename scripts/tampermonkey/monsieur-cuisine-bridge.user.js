@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.12.4
+// @version      0.2.13.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -32,8 +32,36 @@
   const CUSTOM_COOKING_PROGRAM_LABEL = "Cottura personalizzata";
   const MIN_SCALE_WEIGHT_GRAMS = 5;
   const MIN_SCALE_WEIGHT_NOTE_MARKER = "Monsieur Cuisine non accetta pesate inferiori a 5 g";
+  const MIN_RECIPE_IMAGE_WIDTH = 1560;
+  const MIN_RECIPE_IMAGE_HEIGHT = 945;
   const STEP_PROGRAM_SWITCH_SELECTOR = "input[role='switch'][type='checkbox'], input[type='checkbox'][role='switch'], input[aria-checked][type='checkbox']";
   const CUSTOM_COOKING_TEMPERATURE_STEPS = [0, 37, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130];
+  const RECIPE_IMAGE_CANDIDATES = [
+    {
+      id: "shrimp-risotto",
+      pageUrl: "https://www.pexels.com/photo/delicious-creamy-shrimp-risotto-close-up-37045069/",
+      imageUrl: "https://images.pexels.com/photos/37045069/pexels-photo-37045069.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "shrimp-risotto-pexels.jpg",
+      matches: (haystack) => /\brisotto\b/.test(haystack) && /\b(scampi|gamberi|gamberetti|shrimp|prawn|prawns|seafood)\b/.test(haystack),
+    },
+    {
+      id: "burrata-risotto",
+      pageUrl: "https://www.pexels.com/photo/green-soup-with-rice-and-tomatoes-in-white-bowl-14458911/",
+      imageUrl: "https://images.pexels.com/photos/14458911/pexels-photo-14458911.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "burrata-risotto-pexels.jpg",
+      matches: (haystack) => /\brisotto\b/.test(haystack) && /\bburrata\b/.test(haystack),
+    },
+    {
+      id: "generic-food",
+      pageUrl: "https://www.pexels.com/photo/gourmet-plated-dish-with-artistic-presentation-33033774/",
+      imageUrl: "https://images.pexels.com/photos/33033774/pexels-photo-33033774.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "generic-food-pexels.jpg",
+      matches: () => true,
+    },
+  ];
 
   GM_addStyle(`
     .mc-bridge-fab {
@@ -134,6 +162,32 @@
           }
         },
         onerror: () => reject(new Error(`Impossibile raggiungere MonsieurAPP su ${APP_BASE_URL}.`)),
+      });
+    });
+  }
+
+  function fetchRemoteBlob(url, headers = {}) {
+    return new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: "GET",
+        url,
+        headers,
+        responseType: "blob",
+        onload: (response) => {
+          if (response.status < 200 || response.status >= 300) {
+            reject(new Error(`Download immagine fallito: HTTP ${response.status}`));
+            return;
+          }
+
+          const responseBlob = response.response;
+          if (!(responseBlob instanceof Blob)) {
+            reject(new Error("Download immagine non valido: risposta blob assente."));
+            return;
+          }
+
+          resolve(responseBlob);
+        },
+        onerror: () => reject(new Error(`Impossibile scaricare l'immagine da ${url}.`)),
       });
     });
   }
@@ -408,6 +462,10 @@
       title: payload.title,
       sourceUrl: payload.sourceUrl,
       sourceSite: payload.sourceSite,
+      imageUrl: payload.imageUrl || null,
+      imageSourceUrl: payload.imageSourceUrl || null,
+      imageMimeType: payload.imageMimeType || null,
+      imageFileName: payload.imageFileName || null,
       ingredients: Array.isArray(payload.ingredients) ? payload.ingredients : [],
       structuredIngredients: Array.isArray(payload.structuredIngredients)
         ? payload.structuredIngredients.map((ingredient) => ({
@@ -996,6 +1054,113 @@
       .filter((candidate) => candidate.score > 0)
       .sort((left, right) => right.score - left.score);
     return candidates[0]?.element || null;
+  }
+
+  function resolveRecipeImageCandidate(recipe) {
+    if (normalizeText(recipe?.imageUrl)) {
+      return {
+        id: "payload-image",
+        pageUrl: recipe.imageSourceUrl || recipe.imageUrl,
+        imageUrl: recipe.imageUrl,
+        mimeType: normalizeText(recipe.imageMimeType) || "image/jpeg",
+        fileName: normalizeText(recipe.imageFileName) || "recipe-image.jpg",
+      };
+    }
+
+    const haystack = normalizeText([
+      recipe?.title,
+      ...(Array.isArray(recipe?.ingredients) ? recipe.ingredients : []),
+      ...(Array.isArray(recipe?.structuredIngredients) ? recipe.structuredIngredients.map((ingredient) => ingredient?.name || ingredient?.description || "") : []),
+    ].join(" ")).toLowerCase();
+
+    return RECIPE_IMAGE_CANDIDATES.find((candidate) => candidate.matches(haystack)) || null;
+  }
+
+  function findRecipeImageUploadField() {
+    const candidates = Array.from(document.querySelectorAll("input[type='file']"))
+      .filter((element) => {
+        const accept = normalizeText(element.getAttribute("accept")).toLowerCase();
+        return accept.includes("image/jpeg") || accept.includes("image/png") || accept.includes("image/");
+      })
+      .map((element) => {
+        const haystack = collectFieldText(element);
+        const score = [
+          "alta definizione",
+          "cercare e caricare il file",
+          "upload",
+          "png",
+          "jpg",
+          "jpeg",
+        ].reduce((total, pattern) => total + Number(haystack.includes(pattern)), 0);
+        return { element, score };
+      })
+      .sort((left, right) => right.score - left.score);
+
+    return candidates[0]?.element || null;
+  }
+
+  function readImageSize(blob) {
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(blob);
+      const image = new Image();
+
+      image.onload = () => {
+        const width = image.naturalWidth || image.width || 0;
+        const height = image.naturalHeight || image.height || 0;
+        URL.revokeObjectURL(objectUrl);
+        resolve({ width, height });
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Impossibile leggere le dimensioni dell'immagine."));
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  async function uploadRecipeImage(recipe) {
+    const imageField = findRecipeImageUploadField();
+    if (!imageField) {
+      throw new Error(`Campo upload immagine non trovato. Campi visibili:\n${debugVisibleFields()}`);
+    }
+
+    const candidate = resolveRecipeImageCandidate(recipe);
+    if (!candidate?.imageUrl) {
+      throw new Error(`Nessuna immagine web disponibile per la ricetta '${recipe?.title || "senza titolo"}'.`);
+    }
+
+    const blob = await fetchRemoteBlob(candidate.imageUrl, {
+      Accept: "image/jpeg,image/png,image/*;q=0.8,*/*;q=0.5",
+      Referer: candidate.pageUrl || candidate.imageUrl,
+    });
+    const imageBlob = blob.type ? blob : new Blob([blob], { type: candidate.mimeType || "image/jpeg" });
+    const mimeType = normalizeText(imageBlob.type).toLowerCase() || normalizeText(candidate.mimeType).toLowerCase() || "image/jpeg";
+    if (!["image/jpeg", "image/png"].includes(mimeType)) {
+      throw new Error(`Formato immagine non supportato da Monsieur Cuisine: ${mimeType}.`);
+    }
+
+    const size = await readImageSize(imageBlob);
+    if (size.width < MIN_RECIPE_IMAGE_WIDTH || size.height < MIN_RECIPE_IMAGE_HEIGHT) {
+      throw new Error(`Immagine troppo piccola: ${size.width}x${size.height}. Minimo richiesto ${MIN_RECIPE_IMAGE_WIDTH}x${MIN_RECIPE_IMAGE_HEIGHT}.`);
+    }
+
+    const fileName = candidate.fileName || `recipe-image.${mimeType === "image/png" ? "png" : "jpg"}`;
+    const imageFile = new File([imageBlob], fileName, {
+      type: mimeType,
+      lastModified: Date.now(),
+    });
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(imageFile);
+    imageField.files = dataTransfer.files;
+    imageField.dispatchEvent(new Event("input", { bubbles: true }));
+    imageField.dispatchEvent(new Event("change", { bubbles: true }));
+    await sleep(1200);
+
+    if (!imageField.files?.length) {
+      throw new Error("Upload immagine non riuscito: il file input risulta ancora vuoto.");
+    }
+
+    return candidate;
   }
 
   function minutesToHourMinute(totalMinutes) {
@@ -3861,6 +4026,11 @@
       throw new Error(`Unita porzioni non valorizzata. Unita richiesta: ${servingInfo.unit}.`);
     }
     await settleSelectLikeField(servingUnitField);
+
+    const uploadedImage = await uploadRecipeImage(recipe);
+    if (uploadedImage?.pageUrl) {
+      log(`Immagine ricetta allegata da ${uploadedImage.pageUrl}`);
+    }
 
     if (recipe.totalTimeMinutes) {
       const totalTimeField = findField({
