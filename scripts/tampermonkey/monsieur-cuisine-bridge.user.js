@@ -1136,28 +1136,48 @@
   }
 
   function findRecipeImageSaveButton(container = findRecipeImageUploadContainer()) {
-    const searchRoots = uniqueElements([
-      container,
-      container?.closest?.("form"),
-      container?.parentElement,
-      container?.parentElement?.parentElement,
-    ].filter(Boolean));
-
-    const buttonCandidates = searchRoots.flatMap((root) => {
-      if (!(root instanceof Element)) {
-        return [];
-      }
-      return Array.from(root.querySelectorAll("button, a, [role='button'], [tabindex], .v-btn, .btn"))
+    const containerRect = container?.getBoundingClientRect?.() || null;
+    const allButtons = uniqueElements(
+      visibleElements("button, a, [role='button'], [tabindex], .v-btn, .btn")
         .map((element) => element.closest("button, a, [role='button'], [tabindex], .v-btn, .btn") || element)
-        .filter((element) => isVisibleElement(element) && !isElementDisabled(element));
-    });
+    ).filter((element) => isVisibleElement(element) && !isElementDisabled(element));
 
-    return selectBestElement(
-      buttonCandidates,
-      ["salvare", "salva", "save"],
-      ["chiudere", "chiudi", "close", "annulla", "cancel", "avanti", "next", "continua", "continue"],
-      { textExtractor: collectButtonText, requireIncludeMatch: true }
-    );
+    const saveCandidates = allButtons
+      .map((element) => {
+        const text = collectButtonText(element);
+        const isSave = /(^|\s)(salvare|salva|save)(\s|$)/.test(text);
+        const isExcluded = /(chiudere|chiudi|close|annulla|cancel|avanti|next|continua|continue)/.test(text);
+        if (!isSave || isExcluded) {
+          return null;
+        }
+
+        const rect = element.getBoundingClientRect();
+        const sameForm = Boolean(container && element.closest("form") && element.closest("form") === container.closest?.("form"));
+        const sameCard = Boolean(container && element.closest(".v-card, .v-sheet, .container, .row, .col") === container.closest?.(".v-card, .v-sheet, .container, .row, .col"));
+        const nearbyClose = allButtons.some((button) => {
+          if (button === element) return false;
+          const buttonText = collectButtonText(button);
+          if (!/(chiudere|chiudi|close)/.test(buttonText)) return false;
+          const buttonRect = button.getBoundingClientRect();
+          return Math.abs(buttonRect.top - rect.top) < 80 && Math.abs(buttonRect.left - rect.left) < 500;
+        });
+
+        let distanceScore = 0;
+        if (containerRect) {
+          const dx = Math.abs(rect.left - containerRect.left);
+          const dy = Math.abs(rect.top - containerRect.bottom);
+          distanceScore = dx + (dy * 2);
+        }
+
+        return {
+          element,
+          score: (sameForm ? 5000 : 0) + (sameCard ? 3000 : 0) + (nearbyClose ? 2000 : 0) - distanceScore,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score);
+
+    return saveCandidates[0]?.element || null;
   }
 
   async function persistRecipeImageUpload(container = findRecipeImageUploadContainer()) {
@@ -1166,8 +1186,15 @@
       return false;
     }
 
-    clickElementRobust(saveButton);
-    await sleep(1000);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      clickElementRobust(saveButton);
+      document.body?.click?.();
+      await sleep(1800);
+
+      if (hasRecipeImagePreview(container) && (isElementDisabled(saveButton) || !isVisibleElement(saveButton))) {
+        return true;
+      }
+    }
 
     const deadline = Date.now() + 12000;
     while (Date.now() < deadline) {
@@ -1315,7 +1342,7 @@
     if (!persisted) {
       log("Bottone Salva immagine non trovato vicino al widget upload; preview presente ma persistenza non confermata.");
     }
-    await sleep(1200);
+    await sleep(2500);
 
     return candidate;
   }
