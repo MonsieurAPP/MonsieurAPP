@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Aggiorna script Tampermonkey{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="badge">
+    Tampermonkey update
+  </div>
+  <h1 class="title">Procedura guidata di aggiornamento</h1>
+  <p class="subtitle">
+    Questa pagina resta aperta mentre Tampermonkey gestisce l'installazione o l'aggiornamento in una scheda separata, cosi' non perdi il contesto se l'estensione mostra una pagina nera dopo il click su Aggiorna.
+  </p>
+</section>
+
+<section class="panel stack">
+  <div class="row-between" style="align-items: center; gap: 12px;">
+    <div>
+      <div class="section-title">Versione servita</div>
+      <div class="title" style="font-size: 1.35rem; margin-top: 10px;">{{ tampermonkey_script_version }}</div>
+    </div>
+    <div class="status-pill status-completed">script corrente</div>
+  </div>
+
+  <div class="alert alert-warning">
+    Tampermonkey non espone alla nostra app una conferma affidabile dopo il click su <strong>Aggiorna</strong>. In alcuni browser la scheda dell'estensione puo' restare nera anche quando l'operazione e' gia' terminata.
+  </div>
+
+  <div class="job-text" style="margin-top: 0;">
+    Per questo il flusso apre Tampermonkey in una nuova scheda e lascia qui la guida. Dopo il click su <strong>Aggiorna</strong> puoi chiudere l'eventuale scheda nera e tornare a questa pagina.
+  </div>
+
+  <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+    <a href="{{ tampermonkey_install_url }}" class="button" target="_blank" rel="noreferrer">Apri aggiornamento Tampermonkey</a>
+    <a href="{{ tampermonkey_download_url }}" class="button button-secondary" download="monsieur-cuisine-bridge.txt">Scarica script</a>
+    <a href="/" class="button button-secondary">Torna alla app</a>
+  </div>
+
+  <div class="prompt-box">
+    <div class="job-text" style="margin-top: 0;">1. Premi <strong>Apri aggiornamento Tampermonkey</strong>.</div>
+    <div class="job-text" style="margin-top: 8px;">2. Nella scheda Tampermonkey controlla che la versione proposta coincida con <strong>{{ tampermonkey_script_version }}</strong>.</div>
+    <div class="job-text" style="margin-top: 8px;">3. Premi <strong>Aggiorna</strong>. Se la scheda poi diventa nera, chiudila: questa guida resta qui apposta.</div>
+    <div class="job-text" style="margin-top: 8px;">4. Se vuoi un controllo rapido, riapri la stessa procedura: Tampermonkey dovra' proporti sempre la versione <strong>{{ tampermonkey_script_version }}</strong> servita da questa istanza.</div>
+    <div class="job-text" style="margin-top: 8px;">5. Torna a MonsieurAPP oppure apri direttamente Monsieur Cuisine e usa il bridge normalmente.</div>
+  </div>
+</section>
+{% endblock %}

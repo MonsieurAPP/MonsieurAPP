@@ -15,9 +15,11 @@ Userscript Tampermonkey per il flusso app-to-browser:
 
 1. Se MonsieurAPP e' protetta da password, accedi prima alla UI della app nello stesso browser.
 2. Installa Tampermonkey nel browser che usi gia' per Monsieur Cuisine.
-3. Dalla pagina di MonsieurAPP premi `Installa o aggiorna in questo browser`: se Tampermonkey e' attivo, si aprira' la proposta di installazione o aggiornamento dello script gia' configurato per l'istanza corrente.
+3. Dalla pagina di MonsieurAPP premi `Installa o aggiorna in questo browser`: la app apre prima una guida con la versione corrente dello script e da li' puoi lanciare Tampermonkey in una nuova scheda.
 4. Se il prompt non compare, usa `Scarica script`: il browser proporra' il nome `monsieur-cuisine-bridge.txt`. Poi apri il file e incollane il contenuto in un nuovo script Tampermonkey, oppure importalo manualmente se il browser o l'estensione lo consentono.
 5. Salva o conferma l'aggiornamento.
+
+Nota: in alcuni browser, dopo il click su `Aggiorna`, Tampermonkey puo' lasciare aperta una scheda nera. La guida di MonsieurAPP resta aperta apposta per non perdere il contesto.
 
 ## File
 

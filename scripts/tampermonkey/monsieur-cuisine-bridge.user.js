@@ -3,6 +3,9 @@
 // @namespace    https://monsieurapp.local
 // @version      0.2.12.3
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
+// @homepageURL  __APP_BASE_URL__
+// @downloadURL  __APP_SCRIPT_INSTALL_URL__
+// @updateURL    __APP_SCRIPT_INSTALL_URL__
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
 // @match        https://*.monsieur-cuisine.com/*

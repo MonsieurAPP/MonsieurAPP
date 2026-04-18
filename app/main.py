@@ -44,10 +44,12 @@ TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 TAMPERMONKEY_SCRIPT_PATH = BASE_DIR / "scripts" / "tampermonkey" / "monsieur-cuisine-bridge.user.js"
 TAMPERMONKEY_INSTALL_PATH = "/downloads/monsieur-cuisine-bridge.user.js"
+TAMPERMONKEY_INSTALL_HELPER_PATH = "/tampermonkey/install"
 TAMPERMONKEY_DOWNLOAD_FILENAME = "monsieur-cuisine-bridge.txt"
 LOCAL_APP_BASE_URL = "http://127.0.0.1:8000"
 TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER = "__APP_BASE_URL__"
 TAMPERMONKEY_APP_ACCESS_PLACEHOLDER = "__APP_ACCESS_TOKEN__"
+TAMPERMONKEY_SCRIPT_INSTALL_URL_PLACEHOLDER = "__APP_SCRIPT_INSTALL_URL__"
 APP_ACCESS_COOKIE_NAME = "monsieurapp_access"
 APP_ACCESS_HEADER_NAME = "x-monsieurapp-access"
 
@@ -186,11 +188,23 @@ def build_login_redirect_target(request: Request) -> str:
     return normalize_post_login_path(target)
 
 
+def build_absolute_tampermonkey_install_url(request: Request) -> str:
+    return f"{build_public_base_url(request)}{TAMPERMONKEY_INSTALL_PATH}"
+
+
+def get_tampermonkey_script_version() -> str:
+    script_content = TAMPERMONKEY_SCRIPT_PATH.read_text(encoding="utf-8")
+    match = re.search(r"^//\s*@version\s+(?P<version>.+?)\s*$", script_content, flags=re.MULTILINE)
+    return match.group("version").strip() if match else "sconosciuta"
+
+
 def render_tampermonkey_script(request: Request) -> str:
     base_url = build_public_base_url(request)
     script_content = TAMPERMONKEY_SCRIPT_PATH.read_text(encoding="utf-8")
+    install_url = build_absolute_tampermonkey_install_url(request)
     return (
         script_content
+        .replace(TAMPERMONKEY_SCRIPT_INSTALL_URL_PLACEHOLDER, install_url, 2)
         .replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 1)
         .replace(TAMPERMONKEY_APP_ACCESS_PLACEHOLDER, APP_SHARED_ACCESS_TOKEN, 1)
     )
@@ -1272,6 +1286,19 @@ async def download_tampermonkey_script(request: Request) -> Response:
         headers={
             "Content-Disposition": f'attachment; filename="{TAMPERMONKEY_DOWNLOAD_FILENAME}"',
             "Cache-Control": "no-store",
+        },
+    )
+
+
+@app.get(TAMPERMONKEY_INSTALL_HELPER_PATH, response_class=HTMLResponse, name="tampermonkey_install_helper")
+async def tampermonkey_install_helper(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "tampermonkey_install.html",
+        {
+            "tampermonkey_install_url": request.url_for("install_tampermonkey_script"),
+            "tampermonkey_download_url": "/downloads/tampermonkey-script",
+            "tampermonkey_script_version": get_tampermonkey_script_version(),
         },
     )
 

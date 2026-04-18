@@ -12,10 +12,8 @@
 
     <div style="display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end;">
       <a
-        href="{{ request.url_for('install_tampermonkey_script') }}"
+        href="{{ request.url_for('tampermonkey_install_helper') }}"
         class="button"
-        target="_blank"
-        rel="noreferrer"
       >
         Aggiorna in questo browser
       </a>
@@ -29,12 +27,12 @@
     </div>
 
     <div class="job-text" style="margin-top: 0;">
-      Se Tampermonkey e' gia' installato in questo browser, il pulsante di aggiornamento apre la proposta di installazione o aggiornamento dello script in una nuova scheda.
+      Il pulsante di aggiornamento apre una guida rapida della app e da li' puoi lanciare l'update Tampermonkey in una nuova scheda, senza perdere il contesto se la pagina dell'estensione poi resta nera.
     </div>
 
     <div class="prompt-box">
       <div class="job-text" style="margin-top: 0;">1. Installa Tampermonkey nel browser che usi gia' per Monsieur Cuisine.</div>
-      <div class="job-text" style="margin-top: 8px;">2. Premi <strong>Aggiorna in questo browser</strong>: se Tampermonkey e' attivo, vedrai direttamente la schermata di installazione o aggiornamento dello userscript gia' configurato per il dominio corrente.</div>
+      <div class="job-text" style="margin-top: 8px;">2. Premi <strong>Aggiorna in questo browser</strong>: la app aprira' una guida dedicata con la versione corrente dello script e il bottone per lanciare Tampermonkey in una nuova scheda.</div>
       <div class="job-text" style="margin-top: 8px;">3. Se il prompt non compare, usa <strong>Scarica script</strong>: il browser proporra' il nome <strong>monsieur-cuisine-bridge.txt</strong>. Poi apri il file e incollane il contenuto in un nuovo script Tampermonkey, oppure importalo manualmente se il browser/estensione lo consente.</div>
       <div class="job-text" style="margin-top: 8px;">4. Lascia attiva l'estensione: quando apri Monsieur Cuisine comparira' il pulsante flottante di MonsieurAPP.</div>
       <div class="job-text" style="margin-top: 8px;">5. Dopo ogni aggiornamento puoi ripetere lo stesso bottone di aggiornamento oppure riscaricare il file e reinstallarlo sopra la versione precedente.</div>
