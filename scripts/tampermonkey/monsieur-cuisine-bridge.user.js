@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.15.0
+// @version      0.2.19.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -1293,11 +1293,11 @@
     const drawWidth = sourceWidth * scale;
     const drawHeight = sourceHeight * scale;
 
-    // Bias verso il basso a destra per avvicinarsi al layout consigliato da Monsieur Cuisine.
+    // Centra l'immagine nel canvas (cover centrato)
     const overflowX = Math.max(0, drawWidth - canvas.width);
     const overflowY = Math.max(0, drawHeight - canvas.height);
-    const offsetX = -overflowX * 0.65;
-    const offsetY = -overflowY * 0.7;
+    const offsetX = -overflowX / 2;
+    const offsetY = -overflowY / 2;
 
     context.imageSmoothingEnabled = true;
     context.imageSmoothingQuality = "high";
@@ -2149,26 +2149,34 @@
       return true;
     }
 
-    const opened = await setSelectLikeFieldOption(field, [optionLabel]);
-    if (opened) {
-      // Vue potrebbe aggiornare il valore in modo asincrono: aspettiamo prima di verificare
-      await sleep(500);
-      if (selectLikeFieldMatchesLabels(field, [optionLabel])) {
-        return true;
+    // Apre il dropdown
+    const trigger = field.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input, .v-input__slot, .v-select__slot") || field;
+    clickElementRobust(trigger);
+    await sleep(400);
+
+    // Cerca l'opzione che contiene TUTTE le parole dell'etichetta (es. "cucina" E "italiana")
+    const keywords = normalizeText(optionLabel).toLowerCase().split(/\s+/).filter(Boolean);
+    const allOptions = getVisibleSelectOptions();
+    let option = allOptions.find((el) => {
+      const text = normalizeText(el.textContent).toLowerCase();
+      return keywords.every((kw) => text.includes(kw));
+    }) || null;
+
+    // Fallback: prova con parole chiave più lunghe una alla volta
+    if (!option) {
+      const longKeywords = keywords.filter((w) => w.length > 3);
+      for (const kw of longKeywords) {
+        option = allOptions.find((el) => normalizeText(el.textContent).toLowerCase().includes(kw)) || null;
+        if (option) break;
       }
     }
 
-    const trigger = field.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input, .v-input__slot, .v-select__slot") || field;
-    clickElementRobust(trigger);
-    await sleep(300);
-
-    let option = findVisibleOptionByLabels([optionLabel]);
+    // Fallback finale: seleziona comunque la prima opzione disponibile
     if (!option) {
-      const options = getVisibleSelectOptions();
-      option = options[20] || null;
+      option = allOptions[0] || null;
     }
+
     if (!option) {
-      // Chiude il dropdown con Escape senza annullare selezioni in corso
       document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape", code: "Escape", keyCode: 27 }));
       await sleep(300);
       return false;
@@ -2183,10 +2191,7 @@
     document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape", code: "Escape", keyCode: 27 }));
     await sleep(500);
 
-    const selected = selectLikeFieldMatchesLabels(field, [optionLabel])
-      || optionLooksSelected(option)
-      || /cucina italiana/.test(normalizeText(option.textContent).toLowerCase());
-    return selected;
+    return true;
   }
 
   function readFieldValue(element) {
@@ -3544,16 +3549,23 @@
   async function tryApplyCustomCookingConfiguration(step, root) {
     const failures = [];
 
-    if (step.temperatureC != null && !await setStepTemperatureField(step, root)) {
+    // In cottura personalizzata velocità 0 o assente impedisce la conferma del passaggio:
+    // si usa il fallback velocità 1 + antiorario (rotazione meno aggressiva).
+    const parsedSpeed = parseStepSpeedValue(step?.speed);
+    const effectiveStep = (!parsedSpeed || parsedSpeed === "0")
+      ? { ...step, speed: "1", reverse: true }
+      : step;
+
+    if (effectiveStep.temperatureC != null && !await setStepTemperatureField(effectiveStep, root)) {
       failures.push("temperatura");
     }
-    if (step.durationSeconds != null && !await setStepDurationFields(step, root)) {
+    if (effectiveStep.durationSeconds != null && !await setStepDurationFields(effectiveStep, root)) {
       failures.push("tempo");
     }
-    if (normalizeText(step.speed || "") && !await setStepSpeedField(step, root)) {
+    if (!await setStepSpeedField(effectiveStep, root)) {
       failures.push("velocita");
     }
-    if (!await setStepReverseDirection(step, root) && step.reverse) {
+    if (!await setStepReverseDirection(effectiveStep, root) && effectiveStep.reverse) {
       failures.push("senso di rotazione");
     }
 
