@@ -846,11 +846,156 @@
   }
 
   function buildShortDescription(recipe) {
-    const firstStep = truncateText(recipe.steps?.[0]?.description || "", 180);
-    if (firstStep) return firstStep;
-
-    const fallback = `${recipe.title}. Ricetta importata da ${recipe.sourceSite || "sito sorgente"}.`;
+    const structuredIngredientNames = (Array.isArray(recipe.structuredIngredients) ? recipe.structuredIngredients : [])
+      .map((ingredient) => normalizeText(ingredient?.name || ingredient?.description || ""))
+      .filter(Boolean);
+    const fallbackIngredientNames = structuredIngredientNames.length
+      ? []
+      : (Array.isArray(recipe.ingredients) ? recipe.ingredients : [])
+        .map((ingredient) => typeof ingredient === "string" ? normalizeText(ingredient) : normalizeText(ingredient?.description || ingredient?.name || ""))
+        .filter(Boolean);
+    const ingredientNames = (structuredIngredientNames.length ? structuredIngredientNames : fallbackIngredientNames).slice(0, 3);
+    const servingsInfo = extractServingInfo(recipe);
+    const timeText = Number.isFinite(Number(recipe.totalTimeMinutes)) && Number(recipe.totalTimeMinutes) > 0
+      ? ` in circa ${Number(recipe.totalTimeMinutes)} minuti`
+      : "";
+    const servingsText = servingsInfo.count
+      ? ` per ${servingsInfo.count} ${servingsInfo.unit}`
+      : "";
+    const ingredientsText = ingredientNames.length
+      ? ` con ${ingredientNames.join(", ")}`
+      : "";
+    const fallback = `${recipe.title}${ingredientsText}${timeText}${servingsText}.`;
     return truncateText(fallback, 180);
+  }
+
+  function normalizeServingUnit(unit) {
+    const normalized = normalizeText(unit).toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    const aliases = new Map([
+      ["porzione", "porzione"],
+      ["porzioni", "porzioni"],
+      ["persona", "porzione"],
+      ["persone", "porzioni"],
+      ["dose", "porzione"],
+      ["dosi", "porzioni"],
+      ["bicchiere", "bicchiere"],
+      ["bicchieri", "bicchieri"],
+      ["vasetto", "vasetto"],
+      ["vasetti", "vasetti"],
+      ["pezzo", "pezzo"],
+      ["pezzi", "pezzi"],
+      ["fetta", "fetta"],
+      ["fette", "fette"],
+      ["bottiglia", "bottiglia"],
+      ["bottiglie", "bottiglie"],
+    ]);
+
+    return aliases.get(normalized) || null;
+  }
+
+  function extractServingInfo(recipe) {
+    const numericCandidates = [
+      recipe?.desiredServings,
+      recipe?.yieldText,
+    ];
+    let count = null;
+
+    for (const candidate of numericCandidates) {
+      if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+        count = Math.round(candidate);
+        break;
+      }
+
+      const normalized = normalizeText(candidate);
+      const match = normalized.match(/(\d+)/);
+      if (match) {
+        count = Number(match[1]);
+        break;
+      }
+    }
+
+    const yieldText = normalizeText(recipe?.yieldText).toLowerCase();
+    const knownUnits = ["porzione", "porzioni", "bicchiere", "bicchieri", "vasetto", "vasetti", "pezzo", "pezzi", "fetta", "fette", "bottiglia", "bottiglie", "persona", "persone", "dose", "dosi"];
+    const matchedUnit = knownUnits.find((candidate) => new RegExp(`(^|\\s)${escapeRegExp(candidate)}($|\\s|[,.])`).test(yieldText));
+    const normalizedUnit = normalizeServingUnit(matchedUnit);
+    const resolvedCount = count && count > 0 ? count : 1;
+    const resolvedUnit = normalizedUnit || (resolvedCount === 1 ? "porzione" : "porzioni");
+
+    return {
+      count: resolvedCount,
+      unit: resolvedUnit,
+    };
+  }
+
+  function estimateRecipeDifficulty(recipe) {
+    const steps = Array.isArray(recipe?.steps) ? recipe.steps : [];
+    const stepCount = steps.length;
+    const totalMinutes = Number(recipe?.totalTimeMinutes || 0);
+    const technicalSteps = steps.filter((step) => stepHasTechnicalPayload(step)).length;
+    const weightedScore = stepCount + Math.round(totalMinutes / 15) + technicalSteps;
+
+    if (weightedScore >= 12 || totalMinutes >= 90 || stepCount >= 10) {
+      return "Massima";
+    }
+    if (weightedScore <= 5 && totalMinutes <= 20 && stepCount <= 4) {
+      return "Minima";
+    }
+    return "Media";
+  }
+
+  async function selectDifficultyOption(levelLabel) {
+    const normalizedLabel = normalizeText(levelLabel);
+    if (!normalizedLabel) {
+      return false;
+    }
+
+    const candidates = uniqueElements(visibleElements("[role='option'], .v-list-item"))
+      .filter((element) => /minima|media|massima/i.test(normalizeText(element.textContent)));
+    const target = candidates.find((element) => textMatchesOptionLabel(normalizeText(element.textContent).toLowerCase(), normalizedLabel.toLowerCase()))
+      || candidates.find((element) => normalizeText(element.textContent).toLowerCase().includes(normalizedLabel.toLowerCase()));
+    if (!target) {
+      return false;
+    }
+
+    clickElementRobust(target);
+    await sleep(250);
+
+    const selected = target.getAttribute("aria-selected") === "true"
+      || /v-item--active|primary--text/.test(String(target.className || ""))
+      || target.querySelector("input[aria-checked='true']");
+    return Boolean(selected);
+  }
+
+  function findServingCountField() {
+    const patterns = ["porzioni", "servings", "persone", "dosi", "porzione"];
+    const candidates = uniqueElements(visibleElements("input[type='number'], input:not([type='hidden']):not([type='checkbox']):not([type='radio'])"))
+      .map((element) => {
+        const haystack = collectFieldText(element);
+        const score = patterns.reduce((total, pattern) => total + Number(haystack.includes(pattern)), 0)
+          + Number((element.getAttribute("type") || "").toLowerCase() === "number");
+        return { element, score };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+    return candidates[0]?.element || null;
+  }
+
+  function findServingUnitField() {
+    const patterns = ["porzioni", "servings", "persone", "dosi", "porzione", "unita", "unità"];
+    const candidates = uniqueElements(visibleElements("[role='combobox'] input[readonly], input[readonly][autocomplete='off'], input[readonly]"))
+      .map((element) => {
+        const haystack = collectFieldText(element);
+        const score = patterns.reduce((total, pattern) => total + Number(haystack.includes(pattern)), 0)
+          + Number(Boolean(element.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input")));
+        return { element, score };
+      })
+      .filter((candidate) => candidate.score > 0)
+      .sort((left, right) => right.score - left.score);
+    return candidates[0]?.element || null;
   }
 
   function minutesToHourMinute(totalMinutes) {
@@ -3674,7 +3819,9 @@
       throw new Error(`Campo titolo non trovato nella pagina Monsieur Cuisine. Campi visibili:\n${debugVisibleFields()}`);
     }
 
-    setNativeValue(titleField, recipe.title);
+    await commitTextInputLikeUser(titleField, recipe.title);
+    await ensureFieldValue(titleField, recipe.title, "Titolo ricetta");
+
     const briefDescriptionField = findField({
       selectors: [
         "textarea[name*='description']",
@@ -3686,21 +3833,34 @@
       ],
       patterns: ["breve descrizione", "inserisci qui una breve descrizione", "short description", "descrizione"],
     });
-    if (briefDescriptionField) {
-      setNativeValue(briefDescriptionField, buildShortDescription(recipe));
+    if (!briefDescriptionField) {
+      throw new Error(`Campo breve descrizione non trovato nella pagina Monsieur Cuisine. Campi visibili:\n${debugVisibleFields()}`);
+    }
+    const shortDescription = buildShortDescription(recipe);
+    await commitTextInputLikeUser(briefDescriptionField, shortDescription);
+    await ensureFieldValue(briefDescriptionField, shortDescription, "Breve descrizione");
+
+    const difficultyLabel = estimateRecipeDifficulty(recipe);
+    if (!await selectDifficultyOption(difficultyLabel)) {
+      throw new Error(`Selettore difficolta non valorizzato. Livello richiesto: ${difficultyLabel}. Campi visibili:\n${debugVisibleFields()}`);
     }
 
-    const servingsField = findField({
-      selectors: [
-        "input[name*='serving']",
-        "input[placeholder*='porzioni' i]",
-        "input[placeholder*='servings' i]",
-      ],
-      patterns: ["porzioni", "servings", "persone", "dosi"],
-    });
-    if (servingsField && recipe.yieldText) {
-      setNativeValue(servingsField, recipe.yieldText);
+    const servingCountField = findServingCountField();
+    const servingUnitField = findServingUnitField();
+    const servingInfo = extractServingInfo(recipe);
+    if (!servingCountField) {
+      throw new Error(`Campo numerico porzioni non trovato. Campi visibili:\n${debugVisibleFields()}`);
     }
+    await commitTextInputLikeUser(servingCountField, String(servingInfo.count));
+    await ensureFieldValue(servingCountField, String(servingInfo.count), "Porzioni");
+    if (!servingUnitField) {
+      throw new Error(`Campo unita porzioni non trovato. Campi visibili:\n${debugVisibleFields()}`);
+    }
+    const servingUnitSet = await setSelectLikeFieldOption(servingUnitField, [servingInfo.unit]);
+    if (!servingUnitSet && !selectLikeFieldMatchesLabels(servingUnitField, [servingInfo.unit])) {
+      throw new Error(`Unita porzioni non valorizzata. Unita richiesta: ${servingInfo.unit}.`);
+    }
+    await settleSelectLikeField(servingUnitField);
 
     if (recipe.totalTimeMinutes) {
       const totalTimeField = findField({
