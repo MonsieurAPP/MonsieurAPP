@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.12.2
+// @version      0.2.12.3
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @match        https://www.monsieur-cuisine.com/*
 // @match        https://monsieur-cuisine.com/*
@@ -17,9 +17,13 @@
   "use strict";
 
   const CONFIGURED_APP_BASE_URL = "__APP_BASE_URL__";
+  const CONFIGURED_APP_ACCESS_TOKEN = "__APP_ACCESS_TOKEN__";
   const APP_BASE_URL = CONFIGURED_APP_BASE_URL === "__APP_BASE_URL__"
     ? "http://127.0.0.1:8000"
     : CONFIGURED_APP_BASE_URL;
+  const APP_ACCESS_TOKEN = CONFIGURED_APP_ACCESS_TOKEN === "__APP_ACCESS_TOKEN__"
+    ? ""
+    : CONFIGURED_APP_ACCESS_TOKEN;
   const TARGET_URL = "https://www.monsieur-cuisine.com/it/create-recipe?devices=mc-smart";
   const SCALE_PROGRAM_LABEL = "Bilancia";
   const CUSTOM_COOKING_PROGRAM_LABEL = "Cottura personalizzata";
@@ -103,12 +107,17 @@
 
   function apiRequest(method, path) {
     return new Promise((resolve, reject) => {
+      const headers = {
+        Accept: "application/json",
+      };
+      if (APP_ACCESS_TOKEN) {
+        headers["X-MonsieurAPP-Access"] = APP_ACCESS_TOKEN;
+      }
+
       GM_xmlhttpRequest({
         method,
         url: buildAppUrl(path),
-        headers: {
-          Accept: "application/json",
-        },
+        headers,
         onload: (response) => {
           try {
             const parsed = JSON.parse(response.responseText || "{}");

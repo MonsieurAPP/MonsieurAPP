@@ -10,7 +10,7 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 - gli endpoint `/health` e `/api/health` restituiscono anche metadati operativi (`timestamp`, `uptime`, `service`) oltre ai flag AI;
 - mantiene `numInstances: 1` perche' i job sono in memoria e non sono condivisi tra istanze;
 - monta un disco persistente su `/app/persisted-data` per conservare il prompt template personalizzato tra restart e deploy;
-- chiede in fase di creazione le variabili `AI_API_KEY`, `AI_MODEL` e `AI_BASE_URL`.
+- chiede in fase di creazione le variabili `AI_API_KEY`, `AI_MODEL`, `AI_BASE_URL` e, se vuoi proteggere l'interfaccia, `APP_PASSWORD`.
 
 ## Passi in Render
 
@@ -18,8 +18,9 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 2. In Render crea un nuovo Blueprint e collega il repository.
 3. Durante la creazione conferma il servizio `monsieurapp` definito in `render.yaml`.
 4. Inserisci i valori di `AI_API_KEY` e `AI_MODEL` quando Render li richiede.
-5. Se stai usando un provider OpenAI-compatible diverso da OpenAI, imposta anche `AI_BASE_URL` con l'endpoint corretto del provider. Esempio Groq: `https://api.groq.com/openai/v1`.
-6. Attendi il primo deploy e verifica `https://<tuo-servizio>.onrender.com/health` oppure `https://<tuo-servizio>.onrender.com/api/health`.
+5. Se vuoi richiedere una password iniziale prima di accedere alla app, imposta anche `APP_PASSWORD`.
+6. Se stai usando un provider OpenAI-compatible diverso da OpenAI, imposta anche `AI_BASE_URL` con l'endpoint corretto del provider. Esempio Groq: `https://api.groq.com/openai/v1`.
+7. Attendi il primo deploy e verifica `https://<tuo-servizio>.onrender.com/health` oppure `https://<tuo-servizio>.onrender.com/api/health`.
 
 ## Variabili utili
 
@@ -29,11 +30,13 @@ Questa app e' pronta per essere pubblicata su Render come web service Docker.
 - `AI_CHAT_COMPLETIONS_PATH`: opzionale, default `/chat/completions`.
 - `AI_TIMEOUT_SECONDS`: opzionale, default `45`.
 - `PUBLIC_APP_BASE_URL`: opzionale, utile solo se vuoi forzare un URL pubblico specifico invece di usare gli header proxy.
+- `APP_PASSWORD`: opzionale; se valorizzata, la UI e gli endpoint applicativi richiedono una password condivisa prima dell'accesso, mentre gli health check restano pubblici.
 
 ## Note operative
 
 - La cronologia job e l'ultima ricetta confermata sono in memoria: si azzerano a ogni restart o nuovo deploy.
 - Il file locale `.env.local` non entra nell'immagine Docker: i valori AI vanno copiati esplicitamente nelle environment variables di Render.
+- Se imposti `APP_PASSWORD`, anche il download o l'installazione dello userscript dalla app richiedono prima il login alla UI.
 - Lo userscript Tampermonkey va riscaricato dalla pagina della app deployata, cosi' viene configurato per il dominio Render corrente.
 - Se nel pannello Tampermonkey compare ancora un riferimento a `127.0.0.1` o a un vecchio host, significa che nel browser e' rimasta una versione precedente dello script: riscaricalo dalla pagina deployata e reinstallalo sopra la versione gia' presente.
 - Le cartelle locali di sviluppo come `playwright_state`, `debug` e i file `.env*` sono escluse dal build context Docker.

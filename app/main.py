@@ -1,19 +1,21 @@
 import asyncio
 import ast
+import hashlib
 import html
 import logging
 import math
 import json
 import os
 import re
+import secrets
 import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv
@@ -45,6 +47,9 @@ TAMPERMONKEY_INSTALL_PATH = "/downloads/monsieur-cuisine-bridge.user.js"
 TAMPERMONKEY_DOWNLOAD_FILENAME = "monsieur-cuisine-bridge.txt"
 LOCAL_APP_BASE_URL = "http://127.0.0.1:8000"
 TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER = "__APP_BASE_URL__"
+TAMPERMONKEY_APP_ACCESS_PLACEHOLDER = "__APP_ACCESS_TOKEN__"
+APP_ACCESS_COOKIE_NAME = "monsieurapp_access"
+APP_ACCESS_HEADER_NAME = "x-monsieurapp-access"
 
 load_dotenv(BASE_DIR / ".env.local")
 load_dotenv()
@@ -56,6 +61,25 @@ logging.basicConfig(
 LOGGER = logging.getLogger("monsieur_app.web")
 APP_STARTED_AT = datetime.now(timezone.utc)
 APP_STARTED_MONOTONIC = time.monotonic()
+APP_ACCESS_PASSWORD = str(os.getenv("APP_PASSWORD") or os.getenv("APP_ACCESS_PASSWORD") or "").strip()
+APP_AUTH_ENABLED = bool(APP_ACCESS_PASSWORD)
+APP_SHARED_ACCESS_TOKEN = (
+    hashlib.sha256(f"monsieurapp-access:{APP_ACCESS_PASSWORD}".encode("utf-8")).hexdigest()
+    if APP_AUTH_ENABLED
+    else ""
+)
+AUTH_EXEMPT_PATHS = {
+    "/login",
+    "/health",
+    "/api/health",
+    "/healthz",
+    "/api/healthz",
+    "/health/uptime",
+    "/api/health/uptime",
+}
+AUTH_EXEMPT_PREFIXES = (
+    "/static/",
+)
 
 
 def first_forwarded_header_value(value: str | None) -> str | None:
@@ -106,15 +130,93 @@ def build_public_base_url(request: Request) -> str:
     return fallback_base_url
 
 
+def normalize_post_login_path(value: str | None) -> str:
+    normalized = str(value or "").strip()
+    if not normalized.startswith("/") or normalized.startswith("//"):
+        return "/"
+    parsed = urlsplit(normalized)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return normalized or "/"
+
+
+def is_authentication_exempt_path(path: str) -> bool:
+    return path in AUTH_EXEMPT_PATHS or any(path.startswith(prefix) for prefix in AUTH_EXEMPT_PREFIXES)
+
+
+def request_has_valid_access(request: Request) -> bool:
+    if not APP_AUTH_ENABLED:
+        return True
+
+    cookie_token = request.cookies.get(APP_ACCESS_COOKIE_NAME)
+    if cookie_token and APP_SHARED_ACCESS_TOKEN and secrets.compare_digest(cookie_token, APP_SHARED_ACCESS_TOKEN):
+        return True
+
+    header_token = request.headers.get(APP_ACCESS_HEADER_NAME)
+    if header_token and APP_SHARED_ACCESS_TOKEN and secrets.compare_digest(header_token, APP_SHARED_ACCESS_TOKEN):
+        return True
+
+    return False
+
+
+def should_treat_request_as_api(request: Request) -> bool:
+    return request.url.path.startswith("/api/")
+
+
+def should_use_secure_access_cookie(request: Request) -> bool:
+    configured_base_url = os.getenv("PUBLIC_APP_BASE_URL", "").strip()
+    if configured_base_url:
+        return configured_base_url.startswith("https://")
+
+    render_external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+    if render_external_url:
+        return render_external_url.startswith("https://")
+
+    forwarded_proto = first_forwarded_header_value(request.headers.get("x-forwarded-proto"))
+    if forwarded_proto:
+        return forwarded_proto == "https"
+
+    return request.url.scheme == "https"
+
+
+def build_login_redirect_target(request: Request) -> str:
+    target = request.url.path
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    return normalize_post_login_path(target)
+
+
 def render_tampermonkey_script(request: Request) -> str:
     base_url = build_public_base_url(request)
     script_content = TAMPERMONKEY_SCRIPT_PATH.read_text(encoding="utf-8")
-    return script_content.replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 1)
+    return (
+        script_content
+        .replace(TAMPERMONKEY_APP_BASE_URL_PLACEHOLDER, base_url, 1)
+        .replace(TAMPERMONKEY_APP_ACCESS_PLACEHOLDER, APP_SHARED_ACCESS_TOKEN, 1)
+    )
 
 app = FastAPI(title="MonsieurAPP")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 job_store = InMemoryJobStore()
+
+
+@app.middleware("http")
+async def require_initial_password(request: Request, call_next):
+    if not APP_AUTH_ENABLED or is_authentication_exempt_path(request.url.path) or request_has_valid_access(request):
+        return await call_next(request)
+
+    login_path = str(request.url_for("login"))
+    next_target = build_login_redirect_target(request)
+    redirect_url = f"{login_path}?next={quote(next_target, safe='/?=&%#') }"
+
+    if request.headers.get("HX-Request") == "true":
+        return Response(status_code=401, headers={"HX-Redirect": redirect_url})
+
+    if should_treat_request_as_api(request):
+        return JSONResponse(status_code=401, content={"detail": "Autenticazione richiesta"})
+
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 STEP_ENVIRONMENT_LABELS = {
     "mc": "Monsieur Cuisine",
@@ -1109,6 +1211,54 @@ async def run_extract_job(job_id: str, recipe_url: str, desired_servings: int | 
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request) -> HTMLResponse:
     return await render_home(request)
+
+
+@app.get("/login", response_class=HTMLResponse, name="login")
+async def login(request: Request, next: str = "/") -> HTMLResponse:
+    if not APP_AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=303)
+
+    if request_has_valid_access(request):
+        return RedirectResponse(url=normalize_post_login_path(next), status_code=303)
+
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "next_path": normalize_post_login_path(next),
+            "login_error": None,
+        },
+    )
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login_submit(request: Request, password: str = Form(...), next: str = Form(default="/")):
+    if not APP_AUTH_ENABLED:
+        return RedirectResponse(url="/", status_code=303)
+
+    next_path = normalize_post_login_path(next)
+    if not secrets.compare_digest(password, APP_ACCESS_PASSWORD):
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "next_path": next_path,
+                "login_error": "Password non valida.",
+            },
+            status_code=401,
+        )
+
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        APP_ACCESS_COOKIE_NAME,
+        APP_SHARED_ACCESS_TOKEN,
+        httponly=True,
+        max_age=60 * 60 * 24 * 30,
+        samesite="lax",
+        secure=should_use_secure_access_cookie(request),
+        path="/",
+    )
+    return response
 
 
 @app.get("/downloads/tampermonkey-script")

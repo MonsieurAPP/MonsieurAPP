@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Accesso{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="badge">
+    Accesso protetto
+  </div>
+  <h1 class="title">Inserisci la password iniziale</h1>
+  <p class="subtitle">
+    Questa istanza di MonsieurAPP richiede una password condivisa prima di mostrare l'interfaccia e consentire l'accesso agli endpoint applicativi.
+  </p>
+</section>
+
+<section class="panel stack">
+  <div>
+    <div class="section-title">Login</div>
+    <div class="job-text" style="margin-top: 10px;">
+      Usa la password configurata per questa app. Dopo l'accesso resterai autenticato in questo browser.
+    </div>
+  </div>
+
+  {% if login_error %}
+    <div class="alert alert-danger">{{ login_error }}</div>
+  {% endif %}
+
+  <form action="/login" method="post" class="stack">
+    <input type="hidden" name="next" value="{{ next_path }}" />
+    <div class="field">
+      <label for="password" class="label">Password</label>
+      <input id="password" name="password" type="password" required autofocus class="input" placeholder="Inserisci la password" />
+    </div>
+    <button type="submit" class="button">Accedi</button>
+  </form>
+</section>
+{% endblock %}
