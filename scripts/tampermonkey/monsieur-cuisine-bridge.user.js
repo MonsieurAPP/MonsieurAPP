@@ -2011,6 +2011,17 @@
     }) || null;
   }
 
+  function optionLooksSelected(option) {
+    if (!(option instanceof Element)) {
+      return false;
+    }
+
+    return option.getAttribute("aria-selected") === "true"
+      || option.getAttribute("aria-checked") === "true"
+      || /active|selected|primary--text|v-item--active|v-list-item--active/.test(String(option.className || ""))
+      || Boolean(option.querySelector("input[aria-checked='true'], input:checked, .primary--text, .v-icon.primary--text"));
+  }
+
   function selectNativeOptionByLabels(selectElement, labels) {
     if (!(selectElement instanceof HTMLSelectElement)) {
       return false;
@@ -2120,6 +2131,40 @@
     }
 
     return false;
+  }
+
+  async function ensureCategoryOptionSelected(field, optionLabel) {
+    if (!field || !normalizeText(optionLabel)) {
+      return false;
+    }
+
+    if (selectLikeFieldMatchesLabels(field, [optionLabel])) {
+      return true;
+    }
+
+    const opened = await setSelectLikeFieldOption(field, [optionLabel]);
+    if (opened && selectLikeFieldMatchesLabels(field, [optionLabel])) {
+      return true;
+    }
+
+    const trigger = field.closest("[role='combobox'], .v-select, .v-autocomplete, .v-input, .v-input__slot, .v-select__slot") || field;
+    clickElementRobust(trigger);
+    await sleep(300);
+
+    const option = findVisibleOptionByLabels([optionLabel]);
+    if (!option) {
+      return false;
+    }
+
+    if (!optionLooksSelected(option)) {
+      clickElementRobust(option);
+      await sleep(400);
+    }
+
+    const selected = optionLooksSelected(option) || selectLikeFieldMatchesLabels(field, [optionLabel]);
+    document.body?.click?.();
+    await sleep(250);
+    return selected;
   }
 
   function readFieldValue(element) {
@@ -4229,8 +4274,8 @@
     if (!categoryField) {
       throw new Error(`Campo categoria non trovato. Campi visibili:\n${debugVisibleFields()}`);
     }
-    const categorySet = await setSelectLikeFieldOption(categoryField, ["Cucina italiana"]);
-    if (!categorySet && !selectLikeFieldMatchesLabels(categoryField, ["Cucina italiana"])) {
+    const categorySet = await ensureCategoryOptionSelected(categoryField, "Cucina italiana");
+    if (!categorySet) {
       throw new Error(`Categoria non valorizzata. Valore richiesto: Cucina italiana.`);
     }
     await settleSelectLikeField(categoryField);
