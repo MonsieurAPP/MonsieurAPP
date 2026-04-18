@@ -1118,6 +1118,71 @@
     });
   }
 
+  function loadImageElementFromBlob(blob) {
+    return new Promise((resolve, reject) => {
+      const objectUrl = URL.createObjectURL(blob);
+      const image = new Image();
+
+      image.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(image);
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(new Error("Impossibile caricare l'immagine scaricata."));
+      };
+      image.src = objectUrl;
+    });
+  }
+
+  function canvasToBlob(canvas, mimeType = "image/jpeg", quality = 0.92) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          reject(new Error("Impossibile esportare l'immagine normalizzata."));
+          return;
+        }
+        resolve(blob);
+      }, mimeType, quality);
+    });
+  }
+
+  async function normalizeRecipeImageBlob(blob) {
+    const sourceImage = await loadImageElementFromBlob(blob);
+    const sourceWidth = sourceImage.naturalWidth || sourceImage.width || 0;
+    const sourceHeight = sourceImage.naturalHeight || sourceImage.height || 0;
+    if (!sourceWidth || !sourceHeight) {
+      throw new Error("Impossibile leggere le dimensioni sorgente dell'immagine.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = MIN_RECIPE_IMAGE_WIDTH;
+    canvas.height = MIN_RECIPE_IMAGE_HEIGHT;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Canvas 2D non disponibile per normalizzare l'immagine.");
+    }
+
+    context.fillStyle = "#f4f0ea";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    const scale = Math.max(canvas.width / sourceWidth, canvas.height / sourceHeight);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
+
+    // Bias verso il basso a destra per avvicinarsi al layout consigliato da Monsieur Cuisine.
+    const overflowX = Math.max(0, drawWidth - canvas.width);
+    const overflowY = Math.max(0, drawHeight - canvas.height);
+    const offsetX = -overflowX * 0.65;
+    const offsetY = -overflowY * 0.7;
+
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = "high";
+    context.drawImage(sourceImage, offsetX, offsetY, drawWidth, drawHeight);
+
+    return canvasToBlob(canvas, "image/jpeg", 0.92);
+  }
+
   async function uploadRecipeImage(recipe) {
     const imageField = findRecipeImageUploadField();
     if (!imageField) {
@@ -1139,14 +1204,16 @@
       throw new Error(`Formato immagine non supportato da Monsieur Cuisine: ${mimeType}.`);
     }
 
-    const size = await readImageSize(imageBlob);
-    if (size.width < MIN_RECIPE_IMAGE_WIDTH || size.height < MIN_RECIPE_IMAGE_HEIGHT) {
-      throw new Error(`Immagine troppo piccola: ${size.width}x${size.height}. Minimo richiesto ${MIN_RECIPE_IMAGE_WIDTH}x${MIN_RECIPE_IMAGE_HEIGHT}.`);
+    const normalizedBlob = await normalizeRecipeImageBlob(imageBlob);
+    const normalizedSize = await readImageSize(normalizedBlob);
+    if (normalizedSize.width < MIN_RECIPE_IMAGE_WIDTH || normalizedSize.height < MIN_RECIPE_IMAGE_HEIGHT) {
+      throw new Error(`Immagine normalizzata non conforme: ${normalizedSize.width}x${normalizedSize.height}. Minimo richiesto ${MIN_RECIPE_IMAGE_WIDTH}x${MIN_RECIPE_IMAGE_HEIGHT}.`);
     }
 
-    const fileName = candidate.fileName || `recipe-image.${mimeType === "image/png" ? "png" : "jpg"}`;
-    const imageFile = new File([imageBlob], fileName, {
-      type: mimeType,
+    const baseFileName = candidate.fileName || "recipe-image.jpg";
+    const fileName = baseFileName.replace(/\.(png|jpe?g)$/i, "") + ".jpg";
+    const imageFile = new File([normalizedBlob], fileName, {
+      type: "image/jpeg",
       lastModified: Date.now(),
     });
     const dataTransfer = new DataTransfer();
