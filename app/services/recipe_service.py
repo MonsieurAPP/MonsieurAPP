@@ -84,24 +84,41 @@ def parse_ingredient(raw_value: str) -> RecipeIngredient:
             notes=", ".join(dict.fromkeys(notes)) or None,
         )
 
-    quantity_match = re.match(
-        rf"^(?P<quantity>{QUANTITY_PATTERN})\b",
+    compact_quantity_unit_match = re.match(
+        rf"^(?P<quantity>{QUANTITY_PATTERN})\s*(?P<unit>{UNIT_PATTERN})\b",
         text,
         flags=re.IGNORECASE,
     )
-    quantity = quantity_match.group("quantity") if quantity_match else None
-    remainder = text[quantity_match.end():].strip(" ,;-") if quantity_match else text
+    quantity_match = None
+    quantity = None
+    unit = None
+    remainder = text
 
-    unit_match = None
-    if quantity_match and remainder:
-        unit_match = re.match(
-            rf"^(?P<unit>{UNIT_PATTERN})\b",
-            remainder,
+    if compact_quantity_unit_match:
+        quantity = compact_quantity_unit_match.group("quantity")
+        unit = compact_quantity_unit_match.group("unit")
+        remainder = text[compact_quantity_unit_match.end():].strip(" ,;-")
+    else:
+        quantity_match = re.match(
+            rf"^(?P<quantity>{QUANTITY_PATTERN})\b",
+            text,
             flags=re.IGNORECASE,
         )
+        quantity = quantity_match.group("quantity") if quantity_match else None
+        remainder = text[quantity_match.end():].strip(" ,;-") if quantity_match else text
 
-    unit = unit_match.group("unit") if unit_match else None
-    name = remainder[unit_match.end():].strip(" ,;-") if unit_match else remainder
+        unit_match = None
+        if quantity_match and remainder:
+            unit_match = re.match(
+                rf"^(?P<unit>{UNIT_PATTERN})\b",
+                remainder,
+                flags=re.IGNORECASE,
+            )
+
+        unit = unit_match.group("unit") if unit_match else None
+        remainder = remainder[unit_match.end():].strip(" ,;-") if unit_match else remainder
+
+    name = remainder
 
     if quantity and unit and not name:
         name = unit

@@ -391,15 +391,13 @@
   }
 
   function normalizeExportedRecipe(payload) {
-    const operationalTimeline = Array.isArray(payload.operationalTimeline)
-      ? payload.operationalTimeline
+    const machineSteps = Array.isArray(payload.steps)
+      ? payload.steps.filter((step) => normalizeStepEnvironment(step) === "mc")
       : [];
-    const preferOperationalTimeline = operationalTimeline.length > 0;
-    const rawSteps = preferOperationalTimeline
-      ? operationalTimeline
-      : Array.isArray(payload.steps)
-        ? payload.steps
-        : [];
+    const operationalTimeline = Array.isArray(payload.operationalTimeline)
+      ? payload.operationalTimeline.filter((step) => normalizeStepEnvironment(step) === "mc")
+      : [];
+    const rawSteps = machineSteps.length > 0 ? machineSteps : operationalTimeline;
     const normalizedSteps = rawSteps
       .filter((step) => step && typeof step === "object")
       .map((step, index) => normalizeExportedStep(step, index))

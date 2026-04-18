@@ -36,7 +36,7 @@ from app.services.recipe_adaptation import (
     is_live_ai_configured,
     sanitize_monsieur_cuisine_targeted_weight,
 )
-from app.services.recipe_service import RecipeExtractionError, extract_recipe
+from app.services.recipe_service import RecipeExtractionError, extract_recipe, parse_ingredient
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -528,15 +528,40 @@ def normalize_manual_structured_ingredients(
 
         original_text = str(item.get("originalText") or item.get("finalText") or item.get("name") or "").strip()
         final_text = str(item.get("finalText") or original_text).strip()
-        name = str(item.get("name") or final_text or original_text).strip()
-        quantity = str(item.get("quantity") or "").strip() or None
-        unit = str(item.get("unit") or "").strip() or None
-        notes = str(item.get("notes") or "").strip() or None
+        parsed_ingredient = parse_ingredient(final_text or original_text)
+        raw_name = str(item.get("name") or "").strip()
+        raw_quantity = str(item.get("quantity") or "").strip()
+        raw_unit = str(item.get("unit") or "").strip()
+        raw_notes = str(item.get("notes") or "").strip()
+        use_parsed_name = not raw_name or (
+            not raw_quantity
+            and not raw_unit
+            and raw_name in {original_text, final_text}
+            and bool(parsed_ingredient.quantity or parsed_ingredient.unit)
+        )
+        name = (parsed_ingredient.name if use_parsed_name else raw_name) or final_text or original_text
+        quantity = raw_quantity or parsed_ingredient.quantity or None
+        unit = raw_unit or parsed_ingredient.unit or None
+        notes = raw_notes or parsed_ingredient.notes or None
         scaled_quantity = str(item.get("scaledQuantity") or "").strip() or None
-        final_quantity = str(item.get("finalQuantity") or item.get("quantity") or "").strip() or None
+        final_quantity = str(item.get("finalQuantity") or item.get("quantity") or parsed_ingredient.quantity or "").strip() or None
 
         if not any([original_text, final_text, name]):
             continue
+
+        if final_text and (not raw_name or not raw_quantity):
+            final_parts = []
+            if final_quantity:
+                final_parts.append(final_quantity)
+            if unit:
+                final_parts.append(unit)
+            if name:
+                final_parts.append(name)
+            if notes:
+                final_parts.append(f"({notes})")
+            rebuilt_final_text = " ".join(part for part in final_parts if part).strip()
+            if rebuilt_final_text:
+                final_text = rebuilt_final_text
 
         exported_items.append(
             {
@@ -567,19 +592,39 @@ def build_fallback_structured_ingredients(ingredients: list[str]) -> tuple[list[
     exported_items = []
     preview_items = []
     for ingredient in ingredients:
+        parsed_ingredient = parse_ingredient(ingredient)
+        final_quantity = parsed_ingredient.quantity
+        final_text = " ".join(
+            part
+            for part in [
+                parsed_ingredient.quantity,
+                parsed_ingredient.unit,
+                parsed_ingredient.name,
+                f"({parsed_ingredient.notes})" if parsed_ingredient.notes else None,
+            ]
+            if part
+        ).strip() or ingredient
         exported_items.append(
             {
                 "originalText": ingredient,
-                "name": ingredient,
-                "quantity": None,
-                "unit": None,
-                "notes": None,
+                "name": parsed_ingredient.name or ingredient,
+                "quantity": parsed_ingredient.quantity,
+                "unit": parsed_ingredient.unit,
+                "notes": parsed_ingredient.notes,
                 "scaledQuantity": None,
-                "finalQuantity": None,
-                "finalText": ingredient,
+                "finalQuantity": final_quantity,
+                "finalText": final_text,
             }
         )
-        preview_items.append(RecipeIngredient(original_text=ingredient, name=ingredient))
+        preview_items.append(
+            RecipeIngredient(
+                original_text=ingredient,
+                name=parsed_ingredient.name or ingredient,
+                quantity=parsed_ingredient.quantity,
+                unit=parsed_ingredient.unit,
+                notes=parsed_ingredient.notes,
+            )
+        )
     return exported_items, preview_items
 
 
