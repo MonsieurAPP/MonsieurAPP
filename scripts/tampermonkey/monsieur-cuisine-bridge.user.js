@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.19.0
+// @version      0.2.20.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -252,7 +252,12 @@
       parsedValue = value;
     } else {
       const normalized = normalizeText(value).toLowerCase().replace(/,/g, ".");
-      const match = normalized.match(/(-?\d+(?:\.\d+)?)(?:\s*(kg|g|gr|grammi?|grammo))?/);
+      // Se l'unità non è già nota dal parametro esplicito, la richiediamo nel testo
+      // per evitare di abbinare numeri generici (es. "3 uova", "2 cucchiai") come grammi.
+      const pattern = parsedUnit
+        ? /(-?\d+(?:\.\d+)?)(?:\s*(kg|g|gr|grammi?|grammo))?/
+        : /(-?\d+(?:\.\d+)?)\s*(kg|g|gr|grammi?|grammo)/;
+      const match = normalized.match(pattern);
       if (match) {
         parsedValue = Number(match[1]);
         if (!parsedUnit && match[2]) {
@@ -445,13 +450,16 @@
   }
 
   function normalizeExportedRecipe(payload) {
+    // operationalTimeline include TUTTI gli step (mc + external + transition);
+    // quelli non-mc diventano step descrittivi in MC.
+    const operationalTimeline = Array.isArray(payload.operationalTimeline)
+      ? payload.operationalTimeline
+      : [];
     const machineSteps = Array.isArray(payload.steps)
       ? payload.steps.filter((step) => normalizeStepEnvironment(step) === "mc")
       : [];
-    const operationalTimeline = Array.isArray(payload.operationalTimeline)
-      ? payload.operationalTimeline.filter((step) => normalizeStepEnvironment(step) === "mc")
-      : [];
-    const rawSteps = machineSteps.length > 0 ? machineSteps : operationalTimeline;
+    // Preferisce l'operationalTimeline (completa) se disponibile, altrimenti solo mc steps
+    const rawSteps = operationalTimeline.length > 0 ? operationalTimeline : machineSteps;
     const normalizedSteps = rawSteps
       .filter((step) => step && typeof step === "object")
       .map((step, index) => normalizeExportedStep(step, index))
