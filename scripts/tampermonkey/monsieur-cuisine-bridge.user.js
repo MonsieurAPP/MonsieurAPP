@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.21.0
+// @version      0.2.22.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -37,6 +37,7 @@
   const STEP_PROGRAM_SWITCH_SELECTOR = "input[role='switch'][type='checkbox'], input[type='checkbox'][role='switch'], input[aria-checked][type='checkbox']";
   const CUSTOM_COOKING_TEMPERATURE_STEPS = [0, 37, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120, 125, 130];
   const RECIPE_IMAGE_CANDIDATES = [
+    // --- Specific risotto variants (must come before generic pesce/pasta) ---
     {
       id: "shrimp-risotto",
       pageUrl: "https://www.pexels.com/photo/delicious-creamy-shrimp-risotto-close-up-37045069/",
@@ -53,6 +54,70 @@
       fileName: "burrata-risotto-pexels.jpg",
       matches: (haystack) => /\brisotto\b/.test(haystack) && /\bburrata\b/.test(haystack),
     },
+    // --- Fish / seafood (catches gamberi/scampi when not paired with risotto) ---
+    {
+      id: "pesce",
+      pageUrl: "https://www.pexels.com/photo/12318013/",
+      imageUrl: "https://images.pexels.com/photos/12318013/pexels-photo-12318013.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "pesce-pexels.jpg",
+      matches: (haystack) => /\b(salmone|tonno|merluzzo|branzino|orata|trota|baccal[a\u00e0]|pesce|calamari|polpo|gamberi|scampi|cozze|vongole|sgombro|sardine)\b/.test(haystack),
+    },
+    // --- Pasta & gnocchi ---
+    {
+      id: "pasta",
+      pageUrl: "https://www.pexels.com/photo/pasta-262961/",
+      imageUrl: "https://images.pexels.com/photos/262961/pexels-photo-262961.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "pasta-pexels.jpg",
+      matches: (haystack) => /\b(pasta|spaghetti|penne|rigatoni|fusilli|tagliatelle|fettuccine|lasagne|gnocchi|linguine|bucatini|carbonara|amatriciana|cacio|pesto)\b/.test(haystack),
+    },
+    // --- Poultry ---
+    {
+      id: "pollo",
+      pageUrl: "https://www.pexels.com/photo/dish-food-meal-restaurant-106343/",
+      imageUrl: "https://images.pexels.com/photos/106343/pexels-photo-106343.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "pollo-pexels.jpg",
+      matches: (haystack) => /\b(pollo|petto di pollo|coscia|tacchino|gallina|faraona)\b/.test(haystack),
+    },
+    // --- Red meat ---
+    {
+      id: "carne-rossa",
+      pageUrl: "https://www.pexels.com/photo/delicious-steak-and-tomato-dish-with-whipped-butter-34017081/",
+      imageUrl: "https://images.pexels.com/photos/34017081/pexels-photo-34017081.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "carne-rossa-pexels.jpg",
+      matches: (haystack) => /\b(manzo|maiale|vitello|agnello|bistecca|arrosto|brasato|spezzatino|costine|lonza|hamburger|polpette|salsiccia)\b/.test(haystack),
+    },
+    // --- Soups & creams ---
+    {
+      id: "zuppa-vellutata",
+      pageUrl: "https://www.pexels.com/photo/bowl-of-soup-3559899/",
+      imageUrl: "https://images.pexels.com/photos/3559899/pexels-photo-3559899.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "zuppa-pexels.jpg",
+      matches: (haystack) => /\b(zuppa|minestra|vellutata|brodo|minestrone)\b/.test(haystack),
+    },
+    // --- Desserts ---
+    {
+      id: "dolci",
+      pageUrl: "https://www.pexels.com/photo/chocolate-cake-on-white-ceramic-plate-3740193/",
+      imageUrl: "https://images.pexels.com/photos/3740193/pexels-photo-3740193.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "dolci-pexels.jpg",
+      matches: (haystack) => /\b(torta|dolce|biscotti|tiramisu|panna cotta|mousse|crostata|muffin|cioccolato|dessert|gelato|budino|semifreddo|pandoro|panettone|croissant|brioche)\b/.test(haystack),
+    },
+    // --- Vegetables & legumes ---
+    {
+      id: "verdure",
+      pageUrl: "https://www.pexels.com/photo/gourmet-vegetable-ratatouille-in-cast-iron-skillet-33474036/",
+      imageUrl: "https://images.pexels.com/photos/33474036/pexels-photo-33474036.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=945&w=1560",
+      mimeType: "image/jpeg",
+      fileName: "verdure-pexels.jpg",
+      matches: (haystack) => /\b(verdure|insalata|spinaci|broccoli|zucchine|melanzane|peperoni|carciofi|cavolfiore|fagioli|ceci|lenticchie|piselli|ratatouille)\b/.test(haystack),
+    },
+    // --- Generic fallback ---
     {
       id: "generic-food",
       pageUrl: "https://www.pexels.com/photo/gourmet-plated-dish-with-artistic-presentation-33033774/",

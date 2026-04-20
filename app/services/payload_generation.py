@@ -66,7 +66,7 @@ def build_payload_generation_messages(recipe_description: str, desired_servings:
                     "  - reverse: true se il testo dice Antiorario, Ant. o simili; false altrimenti.",
                     "  - Se la notazione contiene solo tempo e velocita senza temperatura, usa program Cottura personalizzata con temperatureC null.",
                     "  - Non usare mai Bilancia per step che contengono tempo o temperatura anche se c'e' un peso nell'ingrediente.",
-                    "  - Non usare Bilancia per ingredienti misurati in ml, cucchiai, cucchiaini o altre unita non in grammi; in quel caso usa uno step descrittivo (environment mc, program Cottura personalizzata, senza targetedWeight) o external.",
+                    "- Non usare Bilancia per ingredienti misurati in ml (tranne l'acqua), cucchiai, cucchiaini o altre unita non in grammi; in quel caso usa uno step descrittivo (environment mc, program Cottura personalizzata, senza targetedWeight) o external. Eccezione: se l'ingrediente e' acqua (acqua) espresso in ml, usa Bilancia con targetedWeight uguale al valore numerico dei ml e targetedWeightUnit = g (densita acqua 1 g/ml).",
                     "",
                     "Vincoli pratici per gli step:",
                     "- Inserisci almeno uno step mc.",

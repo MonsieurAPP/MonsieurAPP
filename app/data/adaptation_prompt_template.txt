@@ -42,6 +42,7 @@ Per Cottura personalizzata specifica sempre: Tempo | Temperatura | Velocita | Se
 - Accessori: specifica quando usare cestello, vaporiera profonda, vaporiera piana o farfalla.
 - Aggiunta ingredienti: se il testo contiene piu' aggiunte e una cottura, scomponi in passaggi distinti e cronologici.
 - Aggiunta ingredienti con peso espresso in g o grammi: preferisci Bilancia se il passaggio e' solo di carico ingrediente.
+- Acqua espressa in ml: usa comunque Bilancia con targeted_weight uguale al valore numerico dei ml e targeted_weight_unit = g (densita acqua 1 g/ml). Non trattarla come step descrittivo.
 - Per gli step Bilancia con peso noto valorizza targeted_weight e targeted_weight_unit, usando preferibilmente g.
 - Aggiunta ingredienti senza peso misurabile: puoi lasciare program nullo se il passaggio e' puramente manuale o di carico non assistito.
 - Prudenza: non inventare ingredienti, quantita, tempi, temperature o velocita non supportati dal testo. Se manca un dato, lascialo nullo e segnala un warning.
