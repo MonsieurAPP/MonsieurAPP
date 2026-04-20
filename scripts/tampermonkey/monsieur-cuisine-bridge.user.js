@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Monsieur Cuisine Bridge
 // @namespace    https://monsieurapp.local
-// @version      0.2.20.0
+// @version      0.2.21.0
 // @description  Legge la ricetta confermata da MonsieurAPP e compila il form Monsieur Cuisine nel browser gia' autenticato.
 // @homepageURL  __APP_BASE_URL__
 // @downloadURL  __APP_SCRIPT_INSTALL_URL__
@@ -329,11 +329,24 @@
   }
 
   function normalizeExportedStep(step, index) {
-    const environment = normalizeStepEnvironment(step);
+    const rawEnvironment = normalizeStepEnvironment(step);
     const title = normalizeText(step?.description || step?.detailedInstructions || `Passaggio ${index + 1}`);
     let description = normalizeText(step?.detailedInstructions || step?.description || title);
-    const isDescriptive = environment !== "mc";
     const originalProgram = normalizeStepProgram(step);
+
+    // Uno step mc senza programma né parametri tecnici non ha nulla da configurare sulla
+    // macchina: lo trattiamo come external (descrittivo) per evitare che venga attivato
+    // il pulsante programma senza motivo.
+    const hasTechnicalContent = Boolean(
+      normalizeText(originalProgram)
+      || step?.durationSeconds != null
+      || step?.temperatureC != null
+      || normalizeText(step?.speed || "")
+      || normalizeStepTargetedWeight(step?.targetedWeight, step?.targetedWeightUnit) != null
+      || Boolean(step?.reverse)
+    );
+    const environment = (rawEnvironment === "mc" && !hasTechnicalContent) ? "external" : rawEnvironment;
+    const isDescriptive = environment !== "mc";
     const selectedProgram = isDescriptive ? null : resolveInternalStepProgram(step, title, description, originalProgram);
     let targetedWeight = isDescriptive
       ? null
